@@ -4,12 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter, Event } from 'vs/base/common/event';
-import { ICell, IOutput, NotebookCellOutputsSplice, CellKind, NotebookCellMetadata } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { ICell, IProcessedOutput, NotebookCellOutputsSplice, CellKind, NotebookCellMetadata, NotebookDocumentMetadata, TransientOptions } from 'vs/workbench/contrib/notebook/common/notebookCommon';
 import { PieceTreeTextBufferBuilder } from 'vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBufferBuilder';
 import { URI } from 'vs/base/common/uri';
 import * as model from 'vs/editor/common/model';
 import { Range } from 'vs/editor/common/core/range';
 import { Disposable } from 'vs/base/common/lifecycle';
+import { ITextModelService } from 'vs/editor/common/services/resolverService';
+import { hash } from 'vs/base/common/hash';
+import { PieceTreeTextBuffer } from 'vs/editor/common/model/pieceTreeTextBuffer/pieceTreeTextBuffer';
 
 export class NotebookCellTextModel extends Disposable implements ICell {
 	private _onDidChangeOutputs = new Emitter<NotebookCellOutputsSplice[]>();
@@ -24,20 +27,21 @@ export class NotebookCellTextModel extends Disposable implements ICell {
 	private _onDidChangeLanguage = new Emitter<string>();
 	onDidChangeLanguage: Event<string> = this._onDidChangeLanguage.event;
 
-	private _outputs: IOutput[];
+	private _outputs: IProcessedOutput[];
 
-	get outputs(): IOutput[] {
+	get outputs(): IProcessedOutput[] {
 		return this._outputs;
 	}
 
-	private _metadata: NotebookCellMetadata | undefined;
+	private _metadata: NotebookCellMetadata;
 
 	get metadata() {
 		return this._metadata;
 	}
 
-	set metadata(newMetadata: NotebookCellMetadata | undefined) {
+	set metadata(newMetadata: NotebookCellMetadata) {
 		this._metadata = newMetadata;
+		this._hash = null;
 		this._onDidChangeMetadata.fire();
 	}
 
@@ -47,6 +51,7 @@ export class NotebookCellTextModel extends Disposable implements ICell {
 
 	set language(newLanguage: string) {
 		this._language = newLanguage;
+		this._hash = null;
 		this._onDidChangeLanguage.fire(newLanguage);
 	}
 
@@ -57,30 +62,38 @@ export class NotebookCellTextModel extends Disposable implements ICell {
 			return this._textBuffer;
 		}
 
-		let builder = new PieceTreeTextBufferBuilder();
-		builder.acceptChunk(Array.isArray(this._source) ? this._source.join('\n') : this._source);
+		const builder = new PieceTreeTextBufferBuilder();
+		builder.acceptChunk(this._source);
 		const bufferFactory = builder.finish(true);
-		this._textBuffer = bufferFactory.create(model.DefaultEndOfLine.LF);
+		const { textBuffer, disposable } = bufferFactory.create(model.DefaultEndOfLine.LF);
+		this._textBuffer = textBuffer;
+		this._register(disposable);
 
 		this._register(this._textBuffer.onDidChangeContent(() => {
+			this._hash = null;
 			this._onDidChangeContent.fire();
 		}));
 
 		return this._textBuffer;
 	}
 
+	private _hash: number | null = null;
+
+
 	constructor(
 		readonly uri: URI,
 		public handle: number,
-		private _source: string | string[],
+		private _source: string,
 		private _language: string,
 		public cellKind: CellKind,
-		outputs: IOutput[],
-		metadata: NotebookCellMetadata | undefined
+		outputs: IProcessedOutput[],
+		metadata: NotebookCellMetadata | undefined,
+		public readonly transientOptions: TransientOptions,
+		private readonly _modelService: ITextModelService
 	) {
 		super();
 		this._outputs = outputs;
-		this._metadata = metadata;
+		this._metadata = metadata || {};
 	}
 
 	getValue(): string {
@@ -91,6 +104,35 @@ export class NotebookCellTextModel extends Disposable implements ICell {
 		} else {
 			return this.textBuffer.getValueInRange(fullRange, model.EndOfLinePreference.CRLF);
 		}
+	}
+
+	getHashValue(): number {
+		if (this._hash !== null) {
+			return this._hash;
+		}
+
+		// TODO@rebornix, raw outputs
+		this._hash = hash([hash(this.language), hash(this.getValue()), this._getPersisentMetadata, this.transientOptions.transientOutputs ? [] : this._outputs]);
+		return this._hash;
+	}
+
+	private _getPersisentMetadata() {
+		let filteredMetadata: { [key: string]: any } = {};
+		const transientMetadata = this.transientOptions.transientMetadata;
+
+		const keys = new Set([...Object.keys(this.metadata)]);
+		for (let key of keys) {
+			if (!(transientMetadata[key as keyof NotebookCellMetadata])
+			) {
+				filteredMetadata[key] = this.metadata[key as keyof NotebookCellMetadata];
+			}
+		}
+
+		return filteredMetadata;
+	}
+
+	getTextLength(): number {
+		return this.textBuffer.getLength();
 	}
 
 	getFullModelRange() {
@@ -104,5 +146,39 @@ export class NotebookCellTextModel extends Disposable implements ICell {
 		});
 
 		this._onDidChangeOutputs.fire(splices);
+	}
+
+	getEvaluatedMetadata(documentMetadata: NotebookDocumentMetadata): NotebookCellMetadata {
+		const editable = this.metadata?.editable ??
+			documentMetadata.cellEditable;
+
+		const runnable = this.metadata?.runnable ??
+			documentMetadata.cellRunnable;
+
+		const hasExecutionOrder = this.metadata?.hasExecutionOrder ??
+			documentMetadata.cellHasExecutionOrder;
+
+		return {
+			...(this.metadata || {}),
+			...{
+				editable,
+				runnable,
+				hasExecutionOrder
+			}
+		};
+	}
+
+	async resolveTextModelRef() {
+		const ref = await this._modelService.createModelReference(this.uri);
+		return ref;
+	}
+
+	dispose() {
+		// Manually release reference to previous text buffer to avoid large leaks
+		// in case someone leaks a CellTextModel reference
+		const emptyDisposedTextBuffer = new PieceTreeTextBuffer([], '', '\n', false, false, true, true);
+		emptyDisposedTextBuffer.dispose();
+		this._textBuffer = emptyDisposedTextBuffer;
+		super.dispose();
 	}
 }

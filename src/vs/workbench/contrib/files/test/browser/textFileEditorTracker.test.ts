@@ -94,16 +94,16 @@ suite('Files - TextFileEditorTracker', () => {
 		const model = await accessor.textFileService.files.resolve(resource) as IResolvedTextFileEditorModel;
 
 		model.textEditorModel.setValue('Super Good');
-		assert.equal(snapshotToString(model.createSnapshot()!), 'Super Good');
+		assert.strictEqual(snapshotToString(model.createSnapshot()!), 'Super Good');
 
 		await model.save();
 
 		// change event (watcher)
-		accessor.fileService.fireFileChanges(new FileChangesEvent([{ resource, type: FileChangeType.UPDATED }]));
+		accessor.fileService.fireFileChanges(new FileChangesEvent([{ resource, type: FileChangeType.UPDATED }], false));
 
 		await timeout(0); // due to event updating model async
 
-		assert.equal(snapshotToString(model.createSnapshot()!), 'Hello Html');
+		assert.strictEqual(snapshotToString(model.createSnapshot()!), 'Hello Html');
 
 		tracker.dispose();
 		(<TextFileEditorModelManager>accessor.textFileService.files).dispose();
@@ -162,9 +162,7 @@ suite('Files - TextFileEditorTracker', () => {
 	});
 
 	function awaitEditorOpening(editorService: IEditorService): Promise<void> {
-		return new Promise(c => {
-			Event.once(editorService.onDidActiveEditorChange)(c);
-		});
+		return Event.toPromise(Event.once(editorService.onDidActiveEditorChange));
 	}
 
 	test('non-dirty files reload on window focus', async function () {
@@ -185,11 +183,11 @@ suite('Files - TextFileEditorTracker', () => {
 	});
 
 	function awaitModelLoadEvent(textFileService: ITextFileService, resource: URI): Promise<void> {
-		return new Promise(c => {
+		return new Promise(resolve => {
 			const listener = textFileService.files.onDidLoad(e => {
 				if (isEqual(e.model.resource, resource)) {
 					listener.dispose();
-					c();
+					resolve();
 				}
 			});
 		});

@@ -3,8 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IAction, IActionRunner, ActionRunner } from 'vs/base/common/actions';
-import { IActionViewItem } from 'vs/base/browser/ui/actionbar/actionbar';
+import { IAction, IActionRunner, ActionRunner, IActionViewItem } from 'vs/base/common/actions';
 import { Component } from 'vs/workbench/common/component';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { IComposite, ICompositeControl } from 'vs/workbench/common/composite';
@@ -33,9 +32,6 @@ export abstract class Composite extends Component implements IComposite {
 	private readonly _onTitleAreaUpdate = this._register(new Emitter<void>());
 	readonly onTitleAreaUpdate = this._onTitleAreaUpdate.event;
 
-	private readonly _onDidChangeVisibility = this._register(new Emitter<boolean>());
-	readonly onDidChangeVisibility = this._onDidChangeVisibility.event;
-
 	private _onDidFocus: Emitter<void> | undefined;
 	get onDidFocus(): Event<void> {
 		if (!this._onDidFocus) {
@@ -60,15 +56,26 @@ export abstract class Composite extends Component implements IComposite {
 		return this._onDidBlur.event;
 	}
 
+	private _hasFocus = false;
+	hasFocus(): boolean {
+		return this._hasFocus;
+	}
+
 	private registerFocusTrackEvents(): { onDidFocus: Emitter<void>, onDidBlur: Emitter<void> } {
 		const container = assertIsDefined(this.getContainer());
 		const focusTracker = this._register(trackFocus(container));
 
 		const onDidFocus = this._onDidFocus = this._register(new Emitter<void>());
-		this._register(focusTracker.onDidFocus(() => onDidFocus.fire()));
+		this._register(focusTracker.onDidFocus(() => {
+			this._hasFocus = true;
+			onDidFocus.fire();
+		}));
 
 		const onDidBlur = this._onDidBlur = this._register(new Emitter<void>());
-		this._register(focusTracker.onDidBlur(() => onDidBlur.fire()));
+		this._register(focusTracker.onDidBlur(() => {
+			this._hasFocus = false;
+			onDidBlur.fire();
+		}));
 
 		return { onDidFocus, onDidBlur };
 	}
@@ -135,8 +142,6 @@ export abstract class Composite extends Component implements IComposite {
 	setVisible(visible: boolean): void {
 		if (this.visible !== !!visible) {
 			this.visible = visible;
-
-			this._onDidChangeVisibility.fire(visible);
 		}
 	}
 
@@ -239,7 +244,7 @@ export abstract class CompositeDescriptor<T extends Composite> {
 		readonly name: string,
 		readonly cssClass?: string,
 		readonly order?: number,
-		readonly keybindingId?: string,
+		readonly requestedIndex?: number,
 	) { }
 
 	instantiate(instantiationService: IInstantiationService): T {

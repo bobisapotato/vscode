@@ -10,19 +10,20 @@ import { Widget } from 'vs/base/browser/ui/widget';
 import { Color } from 'vs/base/common/color';
 import { Emitter, Event } from 'vs/base/common/event';
 import { KeyCode } from 'vs/base/common/keyCodes';
-import { BaseActionViewItem } from 'vs/base/browser/ui/actionbar/actionbar';
 import { DisposableStore } from 'vs/base/common/lifecycle';
-import { Codicon } from 'vs/base/common/codicons';
+import { Codicon, CSSIcon } from 'vs/base/common/codicons';
+import { BaseActionViewItem } from 'vs/base/browser/ui/actionbar/actionViewItems';
 
 export interface ICheckboxOpts extends ICheckboxStyles {
 	readonly actionClassName?: string;
-	readonly icon?: Codicon;
+	readonly icon?: CSSIcon;
 	readonly title: string;
 	readonly isChecked: boolean;
 }
 
 export interface ICheckboxStyles {
 	inputActiveOptionBorder?: Color;
+	inputActiveOptionForeground?: Color;
 	inputActiveOptionBackground?: Color;
 }
 
@@ -34,13 +35,14 @@ export interface ISimpleCheckboxStyles {
 
 const defaultOpts = {
 	inputActiveOptionBorder: Color.fromHex('#007ACC00'),
+	inputActiveOptionForeground: Color.fromHex('#FFFFFF'),
 	inputActiveOptionBackground: Color.fromHex('#0E639C50')
 };
 
 export class CheckboxActionViewItem extends BaseActionViewItem {
 
-	private checkbox: Checkbox | undefined;
-	private readonly disposables = new DisposableStore();
+	protected checkbox: Checkbox | undefined;
+	protected readonly disposables = new DisposableStore();
 
 	render(container: HTMLElement): void {
 		this.element = container;
@@ -99,18 +101,18 @@ export class Checkbox extends Widget {
 
 		const classes = ['monaco-custom-checkbox'];
 		if (this._opts.icon) {
-			classes.push(this._opts.icon.classNames);
-		} else {
-			classes.push('codicon'); // todo@aeschli: remove once codicon fully adopted
+			classes.push(...CSSIcon.asClassNameArray(this._opts.icon));
 		}
 		if (this._opts.actionClassName) {
-			classes.push(this._opts.actionClassName);
+			classes.push(...this._opts.actionClassName.split(' '));
 		}
-		classes.push(this._checked ? 'checked' : 'unchecked');
+		if (this._checked) {
+			classes.push('checked');
+		}
 
 		this.domNode = document.createElement('div');
 		this.domNode.title = this._opts.title;
-		this.domNode.className = classes.join(' ');
+		this.domNode.classList.add(...classes);
 		this.domNode.tabIndex = 0;
 		this.domNode.setAttribute('role', 'checkbox');
 		this.domNode.setAttribute('aria-checked', String(this._checked));
@@ -152,12 +154,9 @@ export class Checkbox extends Widget {
 
 	set checked(newIsChecked: boolean) {
 		this._checked = newIsChecked;
+
 		this.domNode.setAttribute('aria-checked', String(this._checked));
-		if (this._checked) {
-			this.domNode.classList.add('checked');
-		} else {
-			this.domNode.classList.remove('checked');
-		}
+		this.domNode.classList.toggle('checked', this._checked);
 
 		this.applyStyles();
 	}
@@ -170,6 +169,9 @@ export class Checkbox extends Widget {
 		if (styles.inputActiveOptionBorder) {
 			this._opts.inputActiveOptionBorder = styles.inputActiveOptionBorder;
 		}
+		if (styles.inputActiveOptionForeground) {
+			this._opts.inputActiveOptionForeground = styles.inputActiveOptionForeground;
+		}
 		if (styles.inputActiveOptionBackground) {
 			this._opts.inputActiveOptionBackground = styles.inputActiveOptionBackground;
 		}
@@ -179,6 +181,7 @@ export class Checkbox extends Widget {
 	protected applyStyles(): void {
 		if (this.domNode) {
 			this.domNode.style.borderColor = this._checked && this._opts.inputActiveOptionBorder ? this._opts.inputActiveOptionBorder.toString() : 'transparent';
+			this.domNode.style.color = this._checked && this._opts.inputActiveOptionForeground ? this._opts.inputActiveOptionForeground.toString() : 'inherit';
 			this.domNode.style.backgroundColor = this._checked && this._opts.inputActiveOptionBackground ? this._opts.inputActiveOptionBackground.toString() : 'transparent';
 		}
 	}
@@ -222,6 +225,14 @@ export class SimpleCheckbox extends Widget {
 		this.checkbox.checked = newIsChecked;
 
 		this.applyStyles();
+	}
+
+	focus(): void {
+		this.domNode.focus();
+	}
+
+	hasFocus(): boolean {
+		return this.domNode === document.activeElement;
 	}
 
 	style(styles: ISimpleCheckboxStyles): void {

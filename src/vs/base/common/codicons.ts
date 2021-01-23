@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { codiconStartMarker } from 'vs/base/common/codicon';
 import { Emitter, Event } from 'vs/base/common/event';
 
 export interface IIconRegistry {
@@ -18,9 +17,12 @@ class Registry implements IIconRegistry {
 	private readonly _onDidRegister = new Emitter<Codicon>();
 
 	public add(icon: Codicon) {
-		if (!this._icons.has(icon.id)) {
+		const existing = this._icons.get(icon.id);
+		if (!existing) {
 			this._icons.set(icon.id, icon);
 			this._onDidRegister.fire(icon);
+		} else if (icon.description) {
+			existing.description = icon.description;
 		} else {
 			console.error(`Duplicate registration of codicon ${icon.id}`);
 		}
@@ -43,17 +45,61 @@ const _registry = new Registry();
 
 export const iconRegistry: IIconRegistry = _registry;
 
-export function registerIcon(id: string, def: Codicon, description?: string) {
+export function registerCodicon(id: string, def: Codicon): Codicon {
 	return new Codicon(id, def);
 }
 
-export class Codicon {
+export class Codicon implements CSSIcon {
 	constructor(public readonly id: string, public readonly definition: Codicon | IconDefinition, public description?: string) {
 		_registry.add(this);
 	}
 	public get classNames() { return 'codicon codicon-' + this.id; }
+	// classNamesArray is useful for migrating to ES6 classlist
+	public get classNamesArray() { return ['codicon', 'codicon-' + this.id]; }
 	public get cssSelector() { return '.codicon.codicon-' + this.id; }
 }
+
+export function getClassNamesArray(id: string, modifier?: string) {
+	const classNames = ['codicon', 'codicon-' + id];
+	if (modifier) {
+		classNames.push('codicon-modifier-' + modifier);
+	}
+	return classNames;
+}
+
+export interface CSSIcon {
+	readonly id: string;
+}
+
+export namespace CSSIcon {
+	export const iconIdRegex = /^(codicon\/)?([a-z\-]+)(?:~([a-z\-]+))?$/i;
+
+	export function asClassNameArray(icon: CSSIcon): string[] {
+		if (icon instanceof Codicon) {
+			return ['codicon', 'codicon-' + icon.id];
+		}
+		const match = iconIdRegex.exec(icon.id);
+		if (!match) {
+			return asClassNameArray(Codicon.error);
+		}
+		let [, , id, modifier] = match;
+		const classNames = ['codicon', 'codicon-' + id];
+		if (modifier) {
+			classNames.push('codicon-modifier-' + modifier);
+		}
+		return classNames;
+	}
+
+	export function asClassName(icon: CSSIcon): string {
+		return asClassNameArray(icon).join(' ');
+	}
+
+	export function asCSSSelector(icon: CSSIcon): string {
+		return '.' + asClassNameArray(icon).join('.');
+	}
+}
+
+
 
 interface IconDefinition {
 	character: string;
@@ -244,7 +290,7 @@ export namespace Codicon {
 	export const collapseAll = new Codicon('collapse-all', { character: '\\eac5' });
 	export const colorMode = new Codicon('color-mode', { character: '\\eac6' });
 	export const commentDiscussion = new Codicon('comment-discussion', { character: '\\eac7' });
-	export const compareChanges = new Codicon('compare-changes', { character: '\\eac8' });
+	export const compareChanges = new Codicon('compare-changes', { character: '\\eafd' });
 	export const creditCard = new Codicon('credit-card', { character: '\\eac9' });
 	export const dash = new Codicon('dash', { character: '\\eacc' });
 	export const dashboard = new Codicon('dashboard', { character: '\\eacd' });
@@ -448,7 +494,6 @@ export namespace Codicon {
 	export const debugReverseContinue = new Codicon('debug-reverse-continue', { character: '\\eb8e' });
 	export const debugStepBack = new Codicon('debug-step-back', { character: '\\eb8f' });
 	export const debugRestartFrame = new Codicon('debug-restart-frame', { character: '\\eb90' });
-	export const debugAlternate = new Codicon('debug-alternate', { character: '\\eb91' });
 	export const callIncoming = new Codicon('call-incoming', { character: '\\eb92' });
 	export const callOutgoing = new Codicon('call-outgoing', { character: '\\eb93' });
 	export const menu = new Codicon('menu', { character: '\\eb94' });
@@ -465,45 +510,30 @@ export namespace Codicon {
 	export const syncIgnored = new Codicon('sync-ignored', { character: '\\eb9f' });
 	export const pinned = new Codicon('pinned', { character: '\\eba0' });
 	export const githubInverted = new Codicon('github-inverted', { character: '\\eba1' });
-	export const debugAlt2 = new Codicon('debug-alt-2', { character: '\\f101' });
-	export const debugAlt = new Codicon('debug-alt', { character: '\\f102' });
+	export const debugAlt = new Codicon('debug-alt', { character: '\\eb91' });
 	export const serverProcess = new Codicon('server-process', { character: '\\eba2' });
 	export const serverEnvironment = new Codicon('server-environment', { character: '\\eba3' });
+	export const pass = new Codicon('pass', { character: '\\eba4' });
+	export const stopCircle = new Codicon('stop-circle', { character: '\\eba5' });
+	export const playCircle = new Codicon('play-circle', { character: '\\eba6' });
+	export const record = new Codicon('record', { character: '\\eba7' });
+	export const debugAltSmall = new Codicon('debug-alt-small', { character: '\\eba8' });
+	export const vmConnect = new Codicon('vm-connect', { character: '\\eba9' });
+	export const cloud = new Codicon('cloud', { character: '\\ebaa' });
+	export const merge = new Codicon('merge', { character: '\\ebab' });
+	export const exportIcon = new Codicon('export', { character: '\\ebac' });
+	export const graphLeft = new Codicon('graph-left', { character: '\\ebad' });
+	export const magnet = new Codicon('magnet', { character: '\\ebae' });
+	export const notebook = new Codicon('notebook', { character: '\\ebaf' });
+	export const redo = new Codicon('redo', { character: '\\ebb0' });
+	export const checkAll = new Codicon('check-all', { character: '\\ebb1' });
+	export const pinnedDirty = new Codicon('pinned-dirty', { character: '\\ebb2' });
+	export const passFilled = new Codicon('pass-filled', { character: '\\ebb3' });
+	export const circleLargeFilled = new Codicon('circle-large-filled', { character: '\\ebb4' });
+	export const circleLargeOutline = new Codicon('circle-large-outline', { character: '\\ebb5' });
+	export const combine = new Codicon('combine', { character: '\\ebb6' });
+	export const gather = new Codicon('gather', { character: '\\ebb6' });
+
+	export const dropDownButton = new Codicon('drop-down-button', Codicon.chevronDown.definition);
 }
 
-
-
-
-const escapeCodiconsRegex = /(\\)?\$\([a-z0-9\-]+?(?:~[a-z0-9\-]*?)?\)/gi;
-export function escapeCodicons(text: string): string {
-	return text.replace(escapeCodiconsRegex, (match, escaped) => escaped ? match : `\\${match}`);
-}
-
-const markdownEscapedCodiconsRegex = /\\\$\([a-z0-9\-]+?(?:~[a-z0-9\-]*?)?\)/gi;
-export function markdownEscapeEscapedCodicons(text: string): string {
-	// Need to add an extra \ for escaping in markdown
-	return text.replace(markdownEscapedCodiconsRegex, match => `\\${match}`);
-}
-
-const markdownUnescapeCodiconsRegex = /(\\)?\$\\\(([a-z0-9\-]+?(?:~[a-z0-9\-]*?)?)\\\)/gi;
-export function markdownUnescapeCodicons(text: string): string {
-	return text.replace(markdownUnescapeCodiconsRegex, (match, escaped, codicon) => escaped ? match : `$(${codicon})`);
-}
-
-const renderCodiconsRegex = /(\\)?\$\((([a-z0-9\-]+?)(?:~([a-z0-9\-]*?))?)\)/gi;
-export function renderCodicons(text: string): string {
-	return text.replace(renderCodiconsRegex, (_, escaped, codicon, name, animation) => {
-		return escaped
-			? `$(${codicon})`
-			: `<span class="codicon codicon-${name}${animation ? ` codicon-animation-${animation}` : ''}"></span>`;
-	});
-}
-
-const stripCodiconsRegex = /(\s)?(\\)?\$\([a-z0-9\-]+?(?:~[a-z0-9\-]*?)?\)(\s)?/gi;
-export function stripCodicons(text: string): string {
-	if (text.indexOf(codiconStartMarker) === -1) {
-		return text;
-	}
-
-	return text.replace(stripCodiconsRegex, (match, preWhitespace, escaped, postWhitespace) => escaped ? match : preWhitespace || postWhitespace || '');
-}

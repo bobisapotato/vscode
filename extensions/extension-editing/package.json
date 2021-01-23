@@ -13,7 +13,8 @@
 		"onLanguage:markdown",
 		"onLanguage:typescript"
 	],
-	"main": "./out/extension",
+	"main": "./out/extensionEditingMain",
+	"browser": "./dist/browser/extensionEditingBrowserMain",
 	"scripts": {
 		"compile": "gulp compile-extension:extension-editing",
 		"watch": "gulp watch-extension:extension-editing"
@@ -58,6 +59,6 @@
 	},
 	"devDependencies": {
 		"@types/markdown-it": "0.0.2",
-		"@types/node": "^12.11.7"
+		"@types/node": "^12.19.9"
 	}
 }

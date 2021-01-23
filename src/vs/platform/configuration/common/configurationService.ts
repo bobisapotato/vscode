@@ -12,10 +12,11 @@ import { Event, Emitter } from 'vs/base/common/event';
 import { URI } from 'vs/base/common/uri';
 import { IFileService } from 'vs/platform/files/common/files';
 import { RunOnceScheduler } from 'vs/base/common/async';
+import { extUriBiasedIgnorePathCase } from 'vs/base/common/resources';
 
 export class ConfigurationService extends Disposable implements IConfigurationService, IDisposable {
 
-	_serviceBrand: undefined;
+	declare readonly _serviceBrand: undefined;
 
 	private configuration: Configuration;
 	private userConfiguration: UserSettings;
@@ -29,7 +30,7 @@ export class ConfigurationService extends Disposable implements IConfigurationSe
 		fileService: IFileService
 	) {
 		super();
-		this.userConfiguration = this._register(new UserSettings(this.settingsResource, undefined, fileService));
+		this.userConfiguration = this._register(new UserSettings(this.settingsResource, undefined, extUriBiasedIgnorePathCase, fileService));
 		this.configuration = new Configuration(new DefaultConfigurationModel(), new ConfigurationModel());
 
 		this.reloadConfigurationScheduler = this._register(new RunOnceScheduler(() => this.reloadConfiguration(), 50));

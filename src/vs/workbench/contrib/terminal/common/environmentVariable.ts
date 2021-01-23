@@ -6,6 +6,7 @@
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { Event } from 'vs/base/common/event';
 import { IProcessEnvironment } from 'vs/base/common/platform';
+import { ThemeIcon } from 'vs/platform/theme/common/themeService';
 
 export const IEnvironmentVariableService = createDecorator<IEnvironmentVariableService>('environmentVariableService');
 
@@ -61,7 +62,7 @@ export interface IMergedEnvironmentVariableCollection {
  * Tracks and persists environment variable collections as defined by extensions.
  */
 export interface IEnvironmentVariableService {
-	_serviceBrand: undefined;
+	readonly _serviceBrand: undefined;
 
 	/**
 	 * Gets a single collection constructed by merging all environment variable collections into
@@ -98,6 +99,6 @@ export type ISerializableEnvironmentVariableCollection = [string, IEnvironmentVa
 export interface IEnvironmentVariableInfo {
 	readonly requiresAction: boolean;
 	getInfo(): string;
-	getIcon(): string;
+	getIcon(): ThemeIcon;
 	getActions?(): { label: string, iconClass?: string, run: () => void, commandId: string }[];
 }

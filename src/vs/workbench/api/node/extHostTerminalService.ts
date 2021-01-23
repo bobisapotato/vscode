@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type * as vscode from 'vscode';
-import product from 'vs/platform/product/common/product';
 import * as os from 'os';
 import { URI, UriComponents } from 'vs/base/common/uri';
 import * as platform from 'vs/base/common/platform';
@@ -12,55 +11,70 @@ import * as terminalEnvironment from 'vs/workbench/contrib/terminal/common/termi
 import { IShellLaunchConfigDto, IShellDefinitionDto, IShellAndArgsDto } from 'vs/workbench/api/common/extHost.protocol';
 import { ExtHostConfiguration, ExtHostConfigProvider, IExtHostConfiguration } from 'vs/workbench/api/common/extHostConfiguration';
 import { ILogService } from 'vs/platform/log/common/log';
-import { IShellLaunchConfig, ITerminalEnvironment } from 'vs/workbench/contrib/terminal/common/terminal';
+import { IShellLaunchConfig, ITerminalEnvironment, ITerminalLaunchError } from 'vs/workbench/contrib/terminal/common/terminal';
 import { TerminalProcess } from 'vs/workbench/contrib/terminal/node/terminalProcess';
 import { ExtHostWorkspace, IExtHostWorkspace } from 'vs/workbench/api/common/extHostWorkspace';
 import { IWorkspaceFolder } from 'vs/platform/workspace/common/workspace';
 import { ExtHostVariableResolverService } from 'vs/workbench/api/common/extHostDebugService';
 import { ExtHostDocumentsAndEditors, IExtHostDocumentsAndEditors } from 'vs/workbench/api/common/extHostDocumentsAndEditors';
-import { getSystemShell, detectAvailableShells } from 'vs/workbench/contrib/terminal/node/terminal';
+import { detectAvailableShells } from 'vs/workbench/contrib/terminal/node/terminal';
 import { getMainProcessParentEnv } from 'vs/workbench/contrib/terminal/node/terminalEnvironment';
-import { BaseExtHostTerminalService, ExtHostTerminal, EnvironmentVariableCollection } from 'vs/workbench/api/common/extHostTerminalService';
+import { BaseExtHostTerminalService, ExtHostTerminal } from 'vs/workbench/api/common/extHostTerminalService';
 import { IExtHostRpcService } from 'vs/workbench/api/common/extHostRpcService';
-import { IExtensionDescription } from 'vs/platform/extensions/common/extensions';
-import { serializeEnvironmentVariableCollection } from 'vs/workbench/contrib/terminal/common/environmentVariableShared';
-import { ISerializableEnvironmentVariableCollection } from 'vs/workbench/contrib/terminal/common/environmentVariable';
 import { MergedEnvironmentVariableCollection } from 'vs/workbench/contrib/terminal/common/environmentVariableCollection';
+import { IExtHostInitDataService } from 'vs/workbench/api/common/extHostInitDataService';
+import { withNullAsUndefined } from 'vs/base/common/types';
+import { getSystemShell, getSystemShellSync } from 'vs/base/node/shell';
+import { generateUuid } from 'vs/base/common/uuid';
 
 export class ExtHostTerminalService extends BaseExtHostTerminalService {
 
 	private _variableResolver: ExtHostVariableResolverService | undefined;
 	private _lastActiveWorkspace: IWorkspaceFolder | undefined;
 
-	private _environmentVariableCollections: Map<string, EnvironmentVariableCollection> = new Map();
-
 	// TODO: Pull this from main side
 	private _isWorkspaceShellAllowed: boolean = false;
+	private _defaultShell: string | undefined;
 
 	constructor(
 		@IExtHostRpcService extHostRpc: IExtHostRpcService,
 		@IExtHostConfiguration private _extHostConfiguration: ExtHostConfiguration,
 		@IExtHostWorkspace private _extHostWorkspace: ExtHostWorkspace,
 		@IExtHostDocumentsAndEditors private _extHostDocumentsAndEditors: ExtHostDocumentsAndEditors,
-		@ILogService private _logService: ILogService
+		@ILogService private _logService: ILogService,
+		@IExtHostInitDataService private _extHostInitDataService: IExtHostInitDataService
 	) {
-		super(extHostRpc);
+		super(true, extHostRpc);
+
+		// Getting the SystemShell is an async operation, however, the ExtHost terminal service is mostly synchronous
+		// and the API `vscode.env.shell` is also synchronous. The default shell _should_ be set when extensions are
+		// starting up but if not, we run getSystemShellSync below which gets a sane default.
+		getSystemShell(platform.platform).then(s => this._defaultShell = s);
+
 		this._updateLastActiveWorkspace();
 		this._updateVariableResolver();
 		this._registerListeners();
 	}
 
 	public createTerminal(name?: string, shellPath?: string, shellArgs?: string[] | string): vscode.Terminal {
-		const terminal = new ExtHostTerminal(this._proxy, { name, shellPath, shellArgs }, name);
+		const terminal = new ExtHostTerminal(this._proxy, generateUuid(), { name, shellPath, shellArgs }, name);
 		this._terminals.push(terminal);
 		terminal.create(shellPath, shellArgs);
 		return terminal;
 	}
 
-	public createTerminalFromOptions(options: vscode.TerminalOptions): vscode.Terminal {
-		const terminal = new ExtHostTerminal(this._proxy, options, options.name);
+	public createTerminalFromOptions(options: vscode.TerminalOptions, isFeatureTerminal?: boolean): vscode.Terminal {
+		const terminal = new ExtHostTerminal(this._proxy, generateUuid(), options, options.name);
 		this._terminals.push(terminal);
-		terminal.create(options.shellPath, options.shellArgs, options.cwd, options.env, /*options.waitOnExit*/ undefined, options.strictEnv, options.hideFromUser);
+		terminal.create(
+			withNullAsUndefined(options.shellPath),
+			withNullAsUndefined(options.shellArgs),
+			withNullAsUndefined(options.cwd),
+			withNullAsUndefined(options.env),
+			/*options.waitOnExit*/ undefined,
+			withNullAsUndefined(options.strictEnv),
+			withNullAsUndefined(options.hideFromUser),
+			withNullAsUndefined(isFeatureTerminal));
 		return terminal;
 	}
 
@@ -71,14 +85,14 @@ export class ExtHostTerminalService extends BaseExtHostTerminalService {
 				.inspect<string | string[]>(key.substr(key.lastIndexOf('.') + 1));
 			return this._apiInspectConfigToPlain<string | string[]>(setting);
 		};
+
 		return terminalEnvironment.getDefaultShell(
 			fetchSetting,
 			this._isWorkspaceShellAllowed,
-			getSystemShell(platform.platform),
+			this._defaultShell ?? getSystemShellSync(platform.platform),
 			process.env.hasOwnProperty('PROCESSOR_ARCHITEW6432'),
 			process.env.windir,
-			this._lastActiveWorkspace,
-			this._variableResolver,
+			terminalEnvironment.createVariableResolver(this._lastActiveWorkspace, this._variableResolver),
 			this._logService,
 			useAutomationShell
 		);
@@ -92,7 +106,7 @@ export class ExtHostTerminalService extends BaseExtHostTerminalService {
 			return this._apiInspectConfigToPlain<string | string[]>(setting);
 		};
 
-		return terminalEnvironment.getDefaultShellArgs(fetchSetting, this._isWorkspaceShellAllowed, useAutomationShell, this._lastActiveWorkspace, this._variableResolver, this._logService);
+		return terminalEnvironment.getDefaultShellArgs(fetchSetting, this._isWorkspaceShellAllowed, useAutomationShell, terminalEnvironment.createVariableResolver(this._lastActiveWorkspace, this._variableResolver), this._logService);
 	}
 
 	private _apiInspectConfigToPlain<T>(
@@ -129,13 +143,14 @@ export class ExtHostTerminalService extends BaseExtHostTerminalService {
 		this._variableResolver = new ExtHostVariableResolverService(workspaceFolders || [], this._extHostDocumentsAndEditors, configProvider, process.env as platform.IProcessEnvironment);
 	}
 
-	public async $spawnExtHostProcess(id: number, shellLaunchConfigDto: IShellLaunchConfigDto, activeWorkspaceRootUriComponents: UriComponents | undefined, cols: number, rows: number, isWorkspaceShellAllowed: boolean): Promise<void> {
+	public async $spawnExtHostProcess(id: number, shellLaunchConfigDto: IShellLaunchConfigDto, activeWorkspaceRootUriComponents: UriComponents | undefined, cols: number, rows: number, isWorkspaceShellAllowed: boolean): Promise<ITerminalLaunchError | undefined> {
 		const shellLaunchConfig: IShellLaunchConfig = {
 			name: shellLaunchConfigDto.name,
 			executable: shellLaunchConfigDto.executable,
 			args: shellLaunchConfigDto.args,
 			cwd: typeof shellLaunchConfigDto.cwd === 'string' ? shellLaunchConfigDto.cwd : URI.revive(shellLaunchConfigDto.cwd),
-			env: shellLaunchConfigDto.env
+			env: shellLaunchConfigDto.env,
+			flowControl: shellLaunchConfigDto.flowControl
 		};
 
 		// Merge in shell and args from settings
@@ -181,18 +196,17 @@ export class ExtHostTerminalService extends BaseExtHostTerminalService {
 		// Get the initial cwd
 		const terminalConfig = configProvider.getConfiguration('terminal.integrated');
 
-		const initialCwd = terminalEnvironment.getCwd(shellLaunchConfig, os.homedir(), lastActiveWorkspace, this._variableResolver, activeWorkspaceRootUri, terminalConfig.cwd, this._logService);
+		const initialCwd = terminalEnvironment.getCwd(shellLaunchConfig, os.homedir(), terminalEnvironment.createVariableResolver(lastActiveWorkspace, this._variableResolver), activeWorkspaceRootUri, terminalConfig.cwd, this._logService);
 		shellLaunchConfig.cwd = initialCwd;
 
 		const envFromConfig = this._apiInspectConfigToPlain(configProvider.getConfiguration('terminal.integrated').inspect<ITerminalEnvironment>(`env.${platformKey}`));
 		const baseEnv = terminalConfig.get<boolean>('inheritEnv', true) ? process.env as platform.IProcessEnvironment : await this._getNonInheritedEnv();
 		const env = terminalEnvironment.createTerminalEnvironment(
 			shellLaunchConfig,
-			lastActiveWorkspace,
 			envFromConfig,
-			this._variableResolver,
+			terminalEnvironment.createVariableResolver(lastActiveWorkspace, this._variableResolver),
 			isWorkspaceShellAllowed,
-			product.version,
+			this._extHostInitDataService.version,
 			terminalConfig.get<'auto' | 'off' | 'on'>('detectLocale', 'auto'),
 			baseEnv
 		);
@@ -205,11 +219,19 @@ export class ExtHostTerminalService extends BaseExtHostTerminalService {
 
 		this._proxy.$sendResolvedLaunchConfig(id, shellLaunchConfig);
 		// Fork the process and listen for messages
-		this._logService.debug(`Terminal process launching on ext host`, shellLaunchConfig, initialCwd, cols, rows, env);
+		this._logService.debug(`Terminal process launching on ext host`, { shellLaunchConfig, initialCwd, cols, rows, env });
 		// TODO: Support conpty on remote, it doesn't seem to work for some reason?
 		// TODO: When conpty is enabled, only enable it when accessibilityMode is off
 		const enableConpty = false; //terminalConfig.get('windowsEnableConpty') as boolean;
-		this._setupExtHostProcessListeners(id, new TerminalProcess(shellLaunchConfig, initialCwd, cols, rows, env, enableConpty, this._logService));
+
+		const terminalProcess = new TerminalProcess(shellLaunchConfig, initialCwd, cols, rows, env, process.env as platform.IProcessEnvironment, enableConpty, this._logService);
+		this._setupExtHostProcessListeners(id, terminalProcess);
+		const error = await terminalProcess.start();
+		if (error) {
+			// TODO: Teardown?
+			return error;
+		}
+		return undefined;
 	}
 
 	public $getAvailableShells(): Promise<IShellDefinitionDto[]> {
@@ -226,38 +248,5 @@ export class ExtHostTerminalService extends BaseExtHostTerminalService {
 
 	public $acceptWorkspacePermissionsChanged(isAllowed: boolean): void {
 		this._isWorkspaceShellAllowed = isAllowed;
-	}
-
-	public getEnvironmentVariableCollection(extension: IExtensionDescription): vscode.EnvironmentVariableCollection {
-		let collection = this._environmentVariableCollections.get(extension.identifier.value);
-		if (!collection) {
-			collection = new EnvironmentVariableCollection();
-			this._setEnvironmentVariableCollection(extension.identifier.value, collection);
-		}
-		return collection;
-	}
-
-	private _syncEnvironmentVariableCollection(extensionIdentifier: string, collection: EnvironmentVariableCollection): void {
-		const serialized = serializeEnvironmentVariableCollection(collection.map);
-		this._proxy.$setEnvironmentVariableCollection(extensionIdentifier, collection.persistent, serialized.length === 0 ? undefined : serialized);
-	}
-
-	public $initEnvironmentVariableCollections(collections: [string, ISerializableEnvironmentVariableCollection][]): void {
-		collections.forEach(entry => {
-			const extensionIdentifier = entry[0];
-			const collection = new EnvironmentVariableCollection(entry[1]);
-			this._setEnvironmentVariableCollection(extensionIdentifier, collection);
-		});
-	}
-
-	private _setEnvironmentVariableCollection(extensionIdentifier: string, collection: EnvironmentVariableCollection): void {
-		this._environmentVariableCollections.set(extensionIdentifier, collection);
-		collection.onDidChangeCollection(() => {
-			// When any collection value changes send this immediately, this is done to ensure
-			// following calls to createTerminal will be created with the new environment. It will
-			// result in more noise by sending multiple updates when called but collections are
-			// expected to be small.
-			this._syncEnvironmentVariableCollection(extensionIdentifier, collection!);
-		});
 	}
 }

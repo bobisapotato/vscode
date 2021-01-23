@@ -9,18 +9,18 @@ import { URI } from 'vs/base/common/uri';
 import { basename, extname, dirname } from 'vs/base/common/resources';
 import { Schemas } from 'vs/base/common/network';
 import { FileLogService } from 'vs/platform/log/common/fileLogService';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { SpdLogService } from 'vs/platform/log/node/spdlogService';
+import { IFileService } from 'vs/platform/files/common/files';
 
 export class LoggerService extends Disposable implements ILoggerService {
 
-	_serviceBrand: undefined;
+	declare readonly _serviceBrand: undefined;
 
 	private readonly loggers = new Map<string, ILogger>();
 
 	constructor(
 		@ILogService private logService: ILogService,
-		@IInstantiationService private instantiationService: IInstantiationService,
+		@IFileService private fileService: IFileService
 	) {
 		super();
 		this._register(logService.onDidChangeLogLevel(level => this.loggers.forEach(logger => logger.setLevel(level))));
@@ -34,7 +34,7 @@ export class LoggerService extends Disposable implements ILoggerService {
 				const ext = extname(resource);
 				logger = new SpdLogService(baseName.substring(0, baseName.length - ext.length), dirname(resource).fsPath, this.logService.getLevel());
 			} else {
-				logger = this.instantiationService.createInstance(FileLogService, basename(resource), resource, this.logService.getLevel());
+				logger = new FileLogService(basename(resource), resource, this.logService.getLevel(), this.fileService);
 			}
 			this.loggers.set(resource.toString(), logger);
 		}

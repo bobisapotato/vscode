@@ -10,8 +10,8 @@ import { IWorkbenchLayoutService } from 'vs/workbench/services/layout/browser/la
 import { IHistoryService } from 'vs/workbench/services/history/common/history';
 import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
 import { ICommandService } from 'vs/platform/commands/common/commands';
-import { CLOSE_EDITOR_COMMAND_ID, MOVE_ACTIVE_EDITOR_COMMAND_ID, ActiveEditorMoveArguments, SPLIT_EDITOR_LEFT, SPLIT_EDITOR_RIGHT, SPLIT_EDITOR_UP, SPLIT_EDITOR_DOWN, splitEditor, LAYOUT_EDITOR_GROUPS_COMMAND_ID, mergeAllGroups } from 'vs/workbench/browser/parts/editor/editorCommands';
-import { IEditorGroupsService, IEditorGroup, GroupsArrangement, GroupLocation, GroupDirection, preferredSideBySideGroupDirection, IFindGroupScope, GroupOrientation, EditorGroupLayout, GroupsOrder } from 'vs/workbench/services/editor/common/editorGroupsService';
+import { CLOSE_EDITOR_COMMAND_ID, MOVE_ACTIVE_EDITOR_COMMAND_ID, ActiveEditorMoveArguments, SPLIT_EDITOR_LEFT, SPLIT_EDITOR_RIGHT, SPLIT_EDITOR_UP, SPLIT_EDITOR_DOWN, splitEditor, LAYOUT_EDITOR_GROUPS_COMMAND_ID, mergeAllGroups, UNPIN_EDITOR_COMMAND_ID } from 'vs/workbench/browser/parts/editor/editorCommands';
+import { IEditorGroupsService, IEditorGroup, GroupsArrangement, GroupLocation, GroupDirection, preferredSideBySideGroupDirection, IFindGroupScope, GroupOrientation, EditorGroupLayout, GroupsOrder, OpenEditorContext } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { DisposableStore } from 'vs/base/common/lifecycle';
@@ -22,6 +22,8 @@ import { ItemActivation, IQuickInputService } from 'vs/platform/quickinput/commo
 import { AllEditorsByMostRecentlyUsedQuickAccess, ActiveGroupEditorsByMostRecentlyUsedQuickAccess, AllEditorsByAppearanceQuickAccess } from 'vs/workbench/browser/parts/editor/editorQuickAccess';
 import { Codicon } from 'vs/base/common/codicons';
 import { IFilesConfigurationService, AutoSaveMode } from 'vs/workbench/services/filesConfiguration/common/filesConfigurationService';
+import { openEditorWith, getAllAvailableEditors } from 'vs/workbench/services/editor/common/editorOpenWith';
+import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 
 export class ExecuteCommandAction extends Action {
 
@@ -405,6 +407,24 @@ export class CloseEditorAction extends Action {
 	}
 }
 
+export class UnpinEditorAction extends Action {
+
+	static readonly ID = 'workbench.action.unpinActiveEditor';
+	static readonly LABEL = nls.localize('unpinEditor', "Unpin Editor");
+
+	constructor(
+		id: string,
+		label: string,
+		@ICommandService private readonly commandService: ICommandService
+	) {
+		super(id, label, Codicon.pinned.classNames);
+	}
+
+	run(context?: IEditorCommandsContext): Promise<void> {
+		return this.commandService.executeCommand(UNPIN_EDITOR_COMMAND_ID, undefined, context);
+	}
+}
+
 export class CloseOneEditorAction extends Action {
 
 	static readonly ID = 'workbench.action.closeActiveEditor';
@@ -491,27 +511,26 @@ export class CloseLeftEditorsInGroupAction extends Action {
 	constructor(
 		id: string,
 		label: string,
-		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupService: IEditorGroupsService
 	) {
 		super(id, label);
 	}
 
 	async run(context?: IEditorIdentifier): Promise<void> {
-		const { group, editor } = getTarget(this.editorService, this.editorGroupService, context);
+		const { group, editor } = this.getTarget(context);
 		if (group && editor) {
 			return group.closeEditors({ direction: CloseDirection.LEFT, except: editor, excludeSticky: true });
 		}
 	}
-}
 
-function getTarget(editorService: IEditorService, editorGroupService: IEditorGroupsService, context?: IEditorIdentifier): { editor: IEditorInput | null, group: IEditorGroup | undefined } {
-	if (context) {
-		return { editor: context.editor, group: editorGroupService.getGroup(context.groupId) };
+	private getTarget(context?: IEditorIdentifier): { editor: IEditorInput | null, group: IEditorGroup | undefined } {
+		if (context) {
+			return { editor: context.editor, group: this.editorGroupService.getGroup(context.groupId) };
+		}
+
+		// Fallback to active group
+		return { group: this.editorGroupService.activeGroup, editor: this.editorGroupService.activeGroup.activeEditor };
 	}
-
-	// Fallback to active group
-	return { group: editorGroupService.activeGroup, editor: editorGroupService.activeGroup.activeEditor };
 }
 
 abstract class BaseCloseAllAction extends Action {
@@ -581,7 +600,7 @@ abstract class BaseCloseAllAction extends Action {
 			else {
 				let name: string;
 				if (editor instanceof SideBySideEditorInput) {
-					name = editor.master.getName(); // prefer shorter names by using master's name in this case
+					name = editor.primary.getName(); // prefer shorter names by using primary's name in this case
 				} else {
 					name = editor.getName();
 				}
@@ -728,12 +747,13 @@ export class CloseEditorInAllGroupsAction extends Action {
 	}
 }
 
-export class BaseMoveGroupAction extends Action {
+class BaseMoveCopyGroupAction extends Action {
 
 	constructor(
 		id: string,
 		label: string,
 		private direction: GroupDirection,
+		private isMove: boolean,
 		private editorGroupService: IEditorGroupsService
 	) {
 		super(id, label);
@@ -748,9 +768,18 @@ export class BaseMoveGroupAction extends Action {
 		}
 
 		if (sourceGroup) {
-			const targetGroup = this.findTargetGroup(sourceGroup);
-			if (targetGroup) {
-				this.editorGroupService.moveGroup(sourceGroup, targetGroup, this.direction);
+			let resultGroup: IEditorGroup | undefined = undefined;
+			if (this.isMove) {
+				const targetGroup = this.findTargetGroup(sourceGroup);
+				if (targetGroup) {
+					resultGroup = this.editorGroupService.moveGroup(sourceGroup, targetGroup, this.direction);
+				}
+			} else {
+				resultGroup = this.editorGroupService.copyGroup(sourceGroup, sourceGroup, this.direction);
+			}
+
+			if (resultGroup) {
+				this.editorGroupService.activateGroup(resultGroup);
 			}
 		}
 	}
@@ -760,7 +789,7 @@ export class BaseMoveGroupAction extends Action {
 
 		// Allow the target group to be in alternative locations to support more
 		// scenarios of moving the group to the taret location.
-		// Helps for https://github.com/Microsoft/vscode/issues/50741
+		// Helps for https://github.com/microsoft/vscode/issues/50741
 		switch (this.direction) {
 			case GroupDirection.LEFT:
 			case GroupDirection.RIGHT:
@@ -780,6 +809,18 @@ export class BaseMoveGroupAction extends Action {
 		}
 
 		return undefined;
+	}
+}
+
+class BaseMoveGroupAction extends BaseMoveCopyGroupAction {
+
+	constructor(
+		id: string,
+		label: string,
+		direction: GroupDirection,
+		editorGroupService: IEditorGroupsService
+	) {
+		super(id, label, direction, true, editorGroupService);
 	}
 }
 
@@ -829,6 +870,74 @@ export class MoveGroupDownAction extends BaseMoveGroupAction {
 
 	static readonly ID = 'workbench.action.moveActiveEditorGroupDown';
 	static readonly LABEL = nls.localize('moveActiveGroupDown', "Move Editor Group Down");
+
+	constructor(
+		id: string,
+		label: string,
+		@IEditorGroupsService editorGroupService: IEditorGroupsService
+	) {
+		super(id, label, GroupDirection.DOWN, editorGroupService);
+	}
+}
+
+class BaseDuplicateGroupAction extends BaseMoveCopyGroupAction {
+
+	constructor(
+		id: string,
+		label: string,
+		direction: GroupDirection,
+		editorGroupService: IEditorGroupsService
+	) {
+		super(id, label, direction, false, editorGroupService);
+	}
+}
+
+export class DuplicateGroupLeftAction extends BaseDuplicateGroupAction {
+
+	static readonly ID = 'workbench.action.duplicateActiveEditorGroupLeft';
+	static readonly LABEL = nls.localize('duplicateActiveGroupLeft', "Duplicate Editor Group Left");
+
+	constructor(
+		id: string,
+		label: string,
+		@IEditorGroupsService editorGroupService: IEditorGroupsService
+	) {
+		super(id, label, GroupDirection.LEFT, editorGroupService);
+	}
+}
+
+export class DuplicateGroupRightAction extends BaseDuplicateGroupAction {
+
+	static readonly ID = 'workbench.action.duplicateActiveEditorGroupRight';
+	static readonly LABEL = nls.localize('duplicateActiveGroupRight', "Duplicate Editor Group Right");
+
+	constructor(
+		id: string,
+		label: string,
+		@IEditorGroupsService editorGroupService: IEditorGroupsService
+	) {
+		super(id, label, GroupDirection.RIGHT, editorGroupService);
+	}
+}
+
+export class DuplicateGroupUpAction extends BaseDuplicateGroupAction {
+
+	static readonly ID = 'workbench.action.duplicateActiveEditorGroupUp';
+	static readonly LABEL = nls.localize('duplicateActiveGroupUp', "Duplicate Editor Group Up");
+
+	constructor(
+		id: string,
+		label: string,
+		@IEditorGroupsService editorGroupService: IEditorGroupsService
+	) {
+		super(id, label, GroupDirection.UP, editorGroupService);
+	}
+}
+
+export class DuplicateGroupDownAction extends BaseDuplicateGroupAction {
+
+	static readonly ID = 'workbench.action.duplicateActiveEditorGroupDown';
+	static readonly LABEL = nls.localize('duplicateActiveGroupDown', "Duplicate Editor Group Down");
 
 	constructor(
 		id: string,
@@ -1774,5 +1883,73 @@ export class NewEditorGroupBelowAction extends BaseCreateEditorGroupAction {
 		@IEditorGroupsService editorGroupService: IEditorGroupsService
 	) {
 		super(id, label, GroupDirection.DOWN, editorGroupService);
+	}
+}
+
+export class ReopenResourcesAction extends Action {
+
+	static readonly ID = 'workbench.action.reopenWithEditor';
+	static readonly LABEL = nls.localize('workbench.action.reopenWithEditor', "Reopen Editor With...");
+
+	constructor(
+		id: string,
+		label: string,
+		@IEditorService private readonly editorService: IEditorService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+	) {
+		super(id, label);
+	}
+
+	async run(): Promise<void> {
+		const activeInput = this.editorService.activeEditor;
+		if (!activeInput) {
+			return;
+		}
+
+		const activeEditorPane = this.editorService.activeEditorPane;
+		if (!activeEditorPane) {
+			return;
+		}
+
+		const options = activeEditorPane.options;
+		const group = activeEditorPane.group;
+		await this.instantiationService.invokeFunction(openEditorWith, activeInput, undefined, options, group);
+	}
+}
+
+export class ToggleEditorTypeAction extends Action {
+
+	static readonly ID = 'workbench.action.toggleEditorType';
+	static readonly LABEL = nls.localize('workbench.action.toggleEditorType', "Toggle Editor Type");
+
+	constructor(
+		id: string,
+		label: string,
+		@IEditorService private readonly editorService: IEditorService,
+	) {
+		super(id, label);
+	}
+
+	async run(): Promise<void> {
+		const activeEditorPane = this.editorService.activeEditorPane;
+		if (!activeEditorPane) {
+			return;
+		}
+
+		const activeEditorResource = activeEditorPane.input.resource;
+		if (!activeEditorResource) {
+			return;
+		}
+
+		const options = activeEditorPane.options;
+		const group = activeEditorPane.group;
+
+		const overrides = getAllAvailableEditors(activeEditorResource, undefined, options, group, this.editorService);
+		const firstNonActiveOverride = overrides.find(([_, entry]) => !entry.active);
+		if (!firstNonActiveOverride) {
+			return;
+		}
+
+		await firstNonActiveOverride[0].open(activeEditorPane.input, { ...options, override: firstNonActiveOverride[1].id }, group, OpenEditorContext.NEW_EDITOR)?.override;
 	}
 }

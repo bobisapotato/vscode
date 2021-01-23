@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import 'vs/css!./media/views';
 import { Disposable, IDisposable, toDisposable, DisposableStore } from 'vs/base/common/lifecycle';
 import { IViewDescriptorService, ViewContainer, IViewDescriptor, IView, ViewContainerLocation, IViewsService, IViewPaneContainer, getVisbileViewContextKey } from 'vs/workbench/common/views';
 import { Registry } from 'vs/platform/registry/common/platform';
@@ -31,10 +30,11 @@ import { IConfigurationService } from 'vs/platform/configuration/common/configur
 import { IWorkbenchLayoutService } from 'vs/workbench/services/layout/browser/layoutService';
 import { URI } from 'vs/base/common/uri';
 import { IProgressIndicator } from 'vs/platform/progress/common/progress';
+import { CATEGORIES } from 'vs/workbench/common/actions';
 
 export class ViewsService extends Disposable implements IViewsService {
 
-	_serviceBrand: undefined;
+	declare readonly _serviceBrand: undefined;
 
 	private readonly viewDisposable: Map<IViewDescriptor, IDisposable>;
 	private readonly viewPaneContainers: Map<string, { viewPaneContainer: ViewPaneContainer, disposable: IDisposable }>;
@@ -159,8 +159,8 @@ export class ViewsService extends Disposable implements IViewsService {
 				constructor() {
 					super({
 						id: viewDescriptor.focusCommand ? viewDescriptor.focusCommand.id : `${viewDescriptor.id}.focus`,
-						title: { original: `Focus on ${viewDescriptor.name} View`, value: localize('focus view', "Focus on {0} View", viewDescriptor.name) },
-						category: composite ? composite.name : localize('view category', "View"),
+						title: { original: `Focus on ${viewDescriptor.name} View`, value: localize({ key: 'focus view', comment: ['{0} indicates the name of the view to be focused.'] }, "Focus on {0} View", viewDescriptor.name) },
+						category: composite ? composite.name : CATEGORIES.View,
 						menu: [{
 							id: MenuId.CommandPalette,
 							when: viewDescriptor.when,
@@ -196,7 +196,9 @@ export class ViewsService extends Disposable implements IViewsService {
 									ContextKeyExpr.equals('view', viewDescriptor.id),
 									ContextKeyExpr.equals(`${viewDescriptor.id}.defaultViewLocation`, false)
 								)
-							)
+							),
+							group: '1_hide',
+							order: 2
 						}],
 					});
 				}
@@ -276,6 +278,11 @@ export class ViewsService extends Disposable implements IViewsService {
 		return viewContainerId ? this.viewDescriptorService.getViewContainerById(viewContainerId) : null;
 	}
 
+	getActiveViewPaneContainerWithId(viewContainerId: string): IViewPaneContainer | null {
+		const viewContainer = this.viewDescriptorService.getViewContainerById(viewContainerId);
+		return viewContainer ? this.getActiveViewPaneContainer(viewContainer) : null;
+	}
+
 	async openViewContainer(id: string, focus?: boolean): Promise<IPaneComposite | null> {
 		const viewContainer = this.viewDescriptorService.getViewContainerById(id);
 		if (viewContainer) {
@@ -298,9 +305,9 @@ export class ViewsService extends Disposable implements IViewsService {
 			const viewContainerLocation = this.viewDescriptorService.getViewContainerLocation(viewContainer);
 			switch (viewContainerLocation) {
 				case ViewContainerLocation.Panel:
-					return this.panelService.getActivePanel()?.getId() === id ? this.panelService.hideActivePanel() : undefined;
+					return this.panelService.getActivePanel()?.getId() === id ? this.layoutService.setPanelHidden(true) : undefined;
 				case ViewContainerLocation.Sidebar:
-					return this.viewletService.getActiveViewlet()?.getId() === id ? this.viewletService.hideActiveViewlet() : undefined;
+					return this.viewletService.getActiveViewlet()?.getId() === id ? this.layoutService.setSideBarHidden(true) : undefined;
 			}
 		}
 	}
@@ -321,7 +328,7 @@ export class ViewsService extends Disposable implements IViewsService {
 		return null;
 	}
 
-	async openView<T extends IView>(id: string, focus: boolean): Promise<T | null> {
+	async openView<T extends IView>(id: string, focus?: boolean): Promise<T | null> {
 		const viewContainer = this.viewDescriptorService.getViewContainerByViewId(id);
 		if (!viewContainer) {
 			return null;
@@ -387,12 +394,29 @@ export class ViewsService extends Disposable implements IViewsService {
 
 	getViewProgressIndicator(viewId: string): IProgressIndicator | undefined {
 		const viewContainer = this.viewDescriptorService.getViewContainerByViewId(viewId);
-		if (viewContainer === null) {
+		if (!viewContainer) {
 			return undefined;
 		}
 
-		const view = this.viewPaneContainers.get(viewContainer.id)?.viewPaneContainer?.getView(viewId);
-		return view?.getProgressIndicator();
+		const viewPaneContainer = this.viewPaneContainers.get(viewContainer.id)?.viewPaneContainer;
+		if (!viewPaneContainer) {
+			return undefined;
+		}
+
+		const view = viewPaneContainer.getView(viewId);
+		if (!view) {
+			return undefined;
+		}
+
+		if (viewPaneContainer.isViewMergedWithContainer()) {
+			return this.getViewContainerProgressIndicator(viewContainer);
+		}
+
+		return view.getProgressIndicator();
+	}
+
+	private getViewContainerProgressIndicator(viewContainer: ViewContainer): IProgressIndicator | undefined {
+		return this.viewDescriptorService.getViewContainerLocation(viewContainer) === ViewContainerLocation.Sidebar ? this.viewletService.getProgressIndicator(viewContainer.id) : this.panelService.getProgressIndicator(viewContainer.id);
 	}
 
 	private registerViewletOrPanel(viewContainer: ViewContainer, viewContainerLocation: ViewContainerLocation): void {
@@ -445,7 +469,7 @@ export class ViewsService extends Disposable implements IViewsService {
 			viewContainer.name,
 			undefined,
 			viewContainer.order,
-			viewContainer.focusCommand?.id,
+			viewContainer.requestedIndex,
 		));
 	}
 
@@ -480,6 +504,7 @@ export class ViewsService extends Disposable implements IViewsService {
 			viewContainer.name,
 			isString(viewContainer.icon) ? viewContainer.icon : undefined,
 			viewContainer.order,
+			viewContainer.requestedIndex,
 			viewContainer.icon instanceof URI ? viewContainer.icon : undefined
 		));
 	}

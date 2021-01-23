@@ -139,20 +139,17 @@ class MarkerStats implements MarkerStatistics {
 
 export class MarkerService implements IMarkerService {
 
-	_serviceBrand: undefined;
+	declare readonly _serviceBrand: undefined;
 
 	private readonly _onMarkerChanged = new Emitter<readonly URI[]>();
 	readonly onMarkerChanged: Event<readonly URI[]> = Event.debounce(this._onMarkerChanged.event, MarkerService._debouncer, 0);
 
 	private readonly _data = new DoubleResourceMap<IMarker[]>();
-	private readonly _stats: MarkerStats;
-
-	constructor() {
-		this._stats = new MarkerStats(this);
-	}
+	private readonly _stats = new MarkerStats(this);
 
 	dispose(): void {
 		this._stats.dispose();
+		this._onMarkerChanged.dispose();
 	}
 
 	getStatistics(): MarkerStatistics {

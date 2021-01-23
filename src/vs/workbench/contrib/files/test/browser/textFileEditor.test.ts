@@ -6,7 +6,7 @@
 import * as assert from 'assert';
 import { toResource } from 'vs/base/test/common/utils';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { workbenchInstantiationService, TestServiceAccessor, TestFilesConfigurationService } from 'vs/workbench/test/browser/workbenchTestServices';
+import { workbenchInstantiationService, TestServiceAccessor, TestFilesConfigurationService, TestTextResourceConfigurationService } from 'vs/workbench/test/browser/workbenchTestServices';
 import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { dispose, IDisposable } from 'vs/base/common/lifecycle';
 import { IEditorRegistry, EditorDescriptor, Extensions as EditorExtensions } from 'vs/workbench/browser/editor';
@@ -26,6 +26,8 @@ import { IConfigurationService } from 'vs/platform/configuration/common/configur
 import { IFilesConfigurationService } from 'vs/workbench/services/filesConfiguration/common/filesConfigurationService';
 import { IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { MockContextKeyService } from 'vs/platform/keybinding/test/common/mockKeybindingService';
+import { ITextResourceConfigurationService } from 'vs/editor/common/services/textResourceConfigurationService';
+import { raceTimeout } from 'vs/base/common/async';
 
 suite('Files - TextFileEditor', () => {
 
@@ -54,6 +56,8 @@ suite('Files - TextFileEditor', () => {
 		configurationService.setUserConfiguration('workbench', { editor: { restoreViewState } });
 		instantiationService.stub(IConfigurationService, configurationService);
 
+		instantiationService.stub(ITextResourceConfigurationService, new TestTextResourceConfigurationService(configurationService));
+
 		instantiationService.stub(IFilesConfigurationService, new TestFilesConfigurationService(
 			<IContextKeyService>instantiationService.createInstance(MockContextKeyService),
 			configurationService
@@ -70,7 +74,7 @@ suite('Files - TextFileEditor', () => {
 
 		const accessor = instantiationService.createInstance(TestServiceAccessor);
 
-		await part.whenRestored;
+		await raceTimeout(part.whenRestored, 2000, () => assert.fail('textFileEditor.test.ts: Unexpected long time to wait for part to restore (#112649)'));
 
 		return [part, accessor, instantiationService, editorService];
 	}
@@ -83,7 +87,7 @@ suite('Files - TextFileEditor', () => {
 		return viewStateTest(this, false);
 	});
 
-	async function viewStateTest(context: Mocha.ITestCallbackContext, restoreViewState: boolean): Promise<void> {
+	async function viewStateTest(context: Mocha.Context, restoreViewState: boolean): Promise<void> {
 		const [part, accessor] = await createPart(restoreViewState);
 
 		let editor = await accessor.editorService.openEditor(accessor.editorService.createEditorInput({ resource: toResource.call(context, '/path/index.txt'), forceFile: true }));
