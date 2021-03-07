@@ -67,7 +67,7 @@ export class Menubar {
 		@IUpdateService private readonly updateService: IUpdateService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
-		@IEnvironmentMainService private readonly environmentService: IEnvironmentMainService,
+		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 		@IWorkspacesHistoryMainService private readonly workspacesHistoryMainService: IWorkspacesHistoryMainService,
 		@IStateService private readonly stateService: IStateService,
@@ -168,9 +168,9 @@ export class Menubar {
 		this.lifecycleMainService.onWillShutdown(() => this.willShutdown = true);
 
 		// // Listen to some events from window service to update menu
-		this.windowsMainService.onWindowsCountChanged(e => this.onWindowsCountChanged(e));
-		this.nativeHostMainService.onDidBlurWindow(() => this.onWindowFocusChange());
-		this.nativeHostMainService.onDidFocusWindow(() => this.onWindowFocusChange());
+		this.windowsMainService.onDidChangeWindowsCount(e => this.onDidChangeWindowsCount(e));
+		this.nativeHostMainService.onDidBlurWindow(() => this.onDidChangeWindowFocus());
+		this.nativeHostMainService.onDidFocusWindow(() => this.onDidChangeWindowFocus());
 	}
 
 	private get currentEnableMenuBarMnemonics(): boolean {
@@ -225,7 +225,7 @@ export class Menubar {
 		}
 	}
 
-	private onWindowsCountChanged(e: IWindowsCountChangedEvent): void {
+	private onDidChangeWindowsCount(e: IWindowsCountChangedEvent): void {
 		if (!isMacintosh) {
 			return;
 		}
@@ -237,7 +237,7 @@ export class Menubar {
 		}
 	}
 
-	private onWindowFocusChange(): void {
+	private onDidChangeWindowFocus(): void {
 		if (!isMacintosh) {
 			return;
 		}
@@ -499,7 +499,7 @@ export class Menubar {
 				const openInNewWindow = this.isOptionClick(event);
 				const success = this.windowsMainService.open({
 					context: OpenContext.MENU,
-					cli: this.environmentService.args,
+					cli: this.environmentMainService.args,
 					urisToOpen: [openable],
 					forceNewWindow: openInNewWindow,
 					gotoLineMode: false
@@ -607,33 +607,6 @@ export class Menubar {
 		}
 	}
 
-	private static _menuItemIsTriggeredViaKeybinding(event: KeyboardEvent, userSettingsLabel: string): boolean {
-		// The event coming in from Electron will inform us only about the modifier keys pressed.
-		// The strategy here is to check if the modifier keys match those of the keybinding,
-		// since it is highly unlikely to use modifier keys when clicking with the mouse
-		if (!userSettingsLabel) {
-			// There is no keybinding
-			return false;
-		}
-
-		let ctrlRequired = /ctrl/.test(userSettingsLabel);
-		let shiftRequired = /shift/.test(userSettingsLabel);
-		let altRequired = /alt/.test(userSettingsLabel);
-		let metaRequired = /cmd/.test(userSettingsLabel) || /super/.test(userSettingsLabel);
-
-		if (!ctrlRequired && !shiftRequired && !altRequired && !metaRequired) {
-			// This keybinding does not use any modifier keys, so we cannot use this heuristic
-			return false;
-		}
-
-		return (
-			ctrlRequired === event.ctrlKey
-			&& shiftRequired === event.shiftKey
-			&& altRequired === event.altKey
-			&& metaRequired === event.metaKey
-		);
-	}
-
 	private createMenuItem(label: string, commandId: string | string[], enabled?: boolean, checked?: boolean): MenuItem;
 	private createMenuItem(label: string, click: () => void, enabled?: boolean, checked?: boolean): MenuItem;
 	private createMenuItem(arg1: string, arg2: any, arg3?: boolean, arg4?: boolean): MenuItem {
@@ -645,7 +618,7 @@ export class Menubar {
 				commandId = this.isOptionClick(event) ? arg2[1] : arg2[0]; // support alternative action if we got multiple action Ids and the option key was pressed while invoking
 			}
 
-			if (userSettingsLabel && Menubar._menuItemIsTriggeredViaKeybinding(event, userSettingsLabel)) {
+			if (userSettingsLabel && event.triggeredByAccelerator) {
 				this.runActionInRenderer({ type: 'keybinding', userSettingsLabel });
 			} else {
 				this.runActionInRenderer({ type: 'commandId', commandId });
@@ -705,8 +678,8 @@ export class Menubar {
 		return new MenuItem(this.withKeybinding(commandId, options));
 	}
 
-	private makeContextAwareClickHandler(click: () => void, contextSpecificHandlers: IMenuItemClickHandler): () => void {
-		return () => {
+	private makeContextAwareClickHandler(click: (menuItem: MenuItem, win: BrowserWindow, event: KeyboardEvent) => void, contextSpecificHandlers: IMenuItemClickHandler): (menuItem: MenuItem, win: BrowserWindow | undefined, event: KeyboardEvent) => void {
+		return (menuItem: MenuItem, win: BrowserWindow | undefined, event: KeyboardEvent) => {
 
 			// No Active Window
 			const activeWindow = BrowserWindow.getFocusedWindow();
@@ -721,7 +694,7 @@ export class Menubar {
 			}
 
 			// Finally execute command in Window
-			click();
+			click(menuItem, win || activeWindow, event);
 		};
 	}
 
@@ -743,7 +716,7 @@ export class Menubar {
 		if (activeWindow) {
 			this.logService.trace('menubar#runActionInRenderer', invocation);
 
-			if (isMacintosh && !this.environmentService.isBuilt && !activeWindow.isReady) {
+			if (isMacintosh && !this.environmentMainService.isBuilt && !activeWindow.isReady) {
 				if ((invocation.type === 'commandId' && invocation.commandId === 'workbench.action.toggleDevTools') || (invocation.type !== 'commandId' && invocation.userSettingsLabel === 'alt+cmd+i')) {
 					// prevent this action from running twice on macOS (https://github.com/microsoft/vscode/issues/62719)
 					// we already register a keybinding in bootstrap-window.js for opening developer tools in case something

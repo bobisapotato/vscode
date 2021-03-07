@@ -211,6 +211,11 @@ export class OutlinePane extends ViewPane {
 			return;
 		}
 
+		if (cts.token.isCancellationRequested) {
+			newOutline?.dispose();
+			return;
+		}
+
 		this._editorDisposables.add(newOutline);
 		this._progressBar.stop().hide();
 
@@ -226,7 +231,7 @@ export class OutlinePane extends ViewPane {
 			{
 				...newOutline.config.options,
 				sorter,
-				openOnSingleClick: true,
+				expandOnDoubleClick: false,
 				expandOnlyOnTwistieClick: true,
 				multipleSelectionSupport: false,
 				hideTwistiesOfChildlessElements: true,
@@ -247,7 +252,6 @@ export class OutlinePane extends ViewPane {
 				this._domNode.classList.remove('message');
 				const state = this._treeStates.get(`${newOutline.outlineKind}/${resource}`);
 				tree.setInput(newOutline, state);
-				tree.expandAll();
 
 			} else {
 				// update: refresh tree

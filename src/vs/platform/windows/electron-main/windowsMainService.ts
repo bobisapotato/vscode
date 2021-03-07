@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { statSync, unlink } from 'fs';
+import { statSync } from 'fs';
 import { basename, normalize, join, posix } from 'vs/base/common/path';
 import { localize } from 'vs/nls';
 import { coalesce, distinct, firstOrDefault } from 'vs/base/common/arrays';
@@ -12,9 +12,9 @@ import { IEmptyWindowBackupInfo } from 'vs/platform/backup/node/backup';
 import { IEnvironmentMainService } from 'vs/platform/environment/electron-main/environmentMainService';
 import { NativeParsedArgs } from 'vs/platform/environment/common/argv';
 import { IStateService } from 'vs/platform/state/node/state';
-import { CodeWindow } from 'vs/code/electron-main/window';
+import { CodeWindow } from 'vs/platform/windows/electron-main/window';
 import { BrowserWindow, MessageBoxOptions, WebContents } from 'electron';
-import { ILifecycleMainService, UnloadReason, LifecycleMainService, LifecycleMainPhase } from 'vs/platform/lifecycle/electron-main/lifecycleMainService';
+import { ILifecycleMainService, UnloadReason, LifecycleMainPhase } from 'vs/platform/lifecycle/electron-main/lifecycleMainService';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { ILogService } from 'vs/platform/log/common/log';
 import { IWindowSettings, IPath, isFileToOpen, isWorkspaceToOpen, isFolderToOpen, IWindowOpenable, IOpenEmptyWindowOptions, IAddFoldersRequest, IPathsToWaitFor, INativeWindowConfiguration, INativeOpenFileRequest } from 'vs/platform/windows/common/windows';
@@ -35,11 +35,12 @@ import { getSingleFolderWorkspaceIdentifier, getWorkspaceIdentifier, IWorkspaces
 import { once } from 'vs/base/common/functional';
 import { Disposable } from 'vs/base/common/lifecycle';
 import { IDialogMainService } from 'vs/platform/dialogs/electron-main/dialogMainService';
-import { withNullAsUndefined } from 'vs/base/common/types';
+import { assertIsDefined, withNullAsUndefined } from 'vs/base/common/types';
 import { isWindowsDriveLetter, toSlashes, parseLineAndColumnAware, sanitizeFilePath } from 'vs/base/common/extpath';
 import { CharCode } from 'vs/base/common/charCode';
 import { getPathLabel } from 'vs/base/common/labels';
 import { CancellationToken } from 'vs/base/common/cancellation';
+import { IFileService } from 'vs/platform/files/common/files';
 
 //#region Helper Interfaces
 
@@ -117,17 +118,17 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 	private static readonly WINDOWS: ICodeWindow[] = [];
 
-	private readonly _onWindowOpened = this._register(new Emitter<ICodeWindow>());
-	readonly onWindowOpened = this._onWindowOpened.event;
+	private readonly _onDidOpenWindow = this._register(new Emitter<ICodeWindow>());
+	readonly onDidOpenWindow = this._onDidOpenWindow.event;
 
-	private readonly _onWindowReady = this._register(new Emitter<ICodeWindow>());
-	readonly onWindowReady = this._onWindowReady.event;
+	private readonly _onDidSignalReadyWindow = this._register(new Emitter<ICodeWindow>());
+	readonly onDidSignalReadyWindow = this._onDidSignalReadyWindow.event;
 
-	private readonly _onWindowDestroyed = this._register(new Emitter<ICodeWindow>());
-	readonly onWindowDestroyed = this._onWindowDestroyed.event;
+	private readonly _onDidDestroyWindow = this._register(new Emitter<ICodeWindow>());
+	readonly onDidDestroyWindow = this._onDidDestroyWindow.event;
 
-	private readonly _onWindowsCountChanged = this._register(new Emitter<IWindowsCountChangedEvent>());
-	readonly onWindowsCountChanged = this._onWindowsCountChanged.event;
+	private readonly _onDidChangeWindowsCount = this._register(new Emitter<IWindowsCountChangedEvent>());
+	readonly onDidChangeWindowsCount = this._onDidChangeWindowsCount.event;
 
 	private readonly windowsStateHandler = this._register(new WindowsStateHandler(this, this.stateService, this.lifecycleMainService, this.logService, this.configurationService));
 
@@ -136,14 +137,15 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		private readonly initialUserEnv: IProcessEnvironment,
 		@ILogService private readonly logService: ILogService,
 		@IStateService private readonly stateService: IStateService,
-		@IEnvironmentMainService private readonly environmentService: IEnvironmentMainService,
+		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService,
 		@ILifecycleMainService private readonly lifecycleMainService: ILifecycleMainService,
 		@IBackupMainService private readonly backupMainService: IBackupMainService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorkspacesHistoryMainService private readonly workspacesHistoryMainService: IWorkspacesHistoryMainService,
 		@IWorkspacesManagementMainService private readonly workspacesManagementMainService: IWorkspacesManagementMainService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IDialogMainService private readonly dialogMainService: IDialogMainService
+		@IDialogMainService private readonly dialogMainService: IDialogMainService,
+		@IFileService private readonly fileService: IFileService
 	) {
 		super();
 
@@ -153,11 +155,11 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	private registerListeners(): void {
 
 		// Signal a window is ready after having entered a workspace
-		this._register(this.workspacesManagementMainService.onWorkspaceEntered(event => this._onWindowReady.fire(event.window)));
+		this._register(this.workspacesManagementMainService.onDidEnterWorkspace(event => this._onDidSignalReadyWindow.fire(event.window)));
 	}
 
 	openEmptyWindow(openConfig: IOpenEmptyConfiguration, options?: IOpenEmptyWindowOptions): ICodeWindow[] {
-		let cli = this.environmentService.args;
+		let cli = this.environmentMainService.args;
 		const remote = options?.remoteAuthority;
 		if (cli && (cli.remote !== remote)) {
 			cli = { ...cli, remote };
@@ -312,7 +314,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		// process can continue. We do this by deleting the waitMarkerFilePath.
 		const waitMarkerFileURI = openConfig.waitMarkerFileURI;
 		if (openConfig.context === OpenContext.CLI && waitMarkerFileURI && usedWindows.length === 1 && usedWindows[0]) {
-			usedWindows[0].whenClosedOrLoaded.then(() => unlink(waitMarkerFileURI.fsPath, () => undefined));
+			usedWindows[0].whenClosedOrLoaded.then(() => this.fileService.del(waitMarkerFileURI), () => undefined);
 		}
 
 		return usedWindows;
@@ -650,7 +652,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		const pathsToOpen: IPathToOpen[] = [];
 		const pathResolveOptions: IPathResolveOptions = { gotoLineMode: openConfig.gotoLineMode };
 		for (const pathToOpen of coalesce(openConfig.urisToOpen || [])) {
-			const path = this.resolveUri(pathToOpen, pathResolveOptions);
+			const path = this.resolveOpenable(pathToOpen, pathResolveOptions);
 
 			// Path exists
 			if (path) {
@@ -668,7 +670,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 					buttons: [localize('ok', "OK")],
 					message: uri.scheme === Schemas.file ? localize('pathNotExistTitle', "Path does not exist") : localize('uriInvalidTitle', "URI can not be opened"),
 					detail: uri.scheme === Schemas.file ?
-						localize('pathNotExistDetail', "The path '{0}' does not seem to exist anymore on disk.", getPathLabel(uri.fsPath, this.environmentService)) :
+						localize('pathNotExistDetail', "The path '{0}' does not seem to exist anymore on disk.", getPathLabel(uri.fsPath, this.environmentMainService)) :
 						localize('uriInvalidDetail', "The URI '{0}' is not valid and can not be opened.", uri.toString()),
 					noLink: true
 				};
@@ -688,9 +690,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		const folderUris = cli['folder-uri'];
 		if (folderUris) {
 			for (const rawFolderUri of folderUris) {
-				const folderUri = this.argToUri(rawFolderUri);
+				const folderUri = this.cliArgToUri(rawFolderUri);
 				if (folderUri) {
-					const path = this.resolveUri({ folderUri }, pathResolveOptions);
+					const path = this.resolveOpenable({ folderUri }, pathResolveOptions);
 					if (path) {
 						pathsToOpen.push(path);
 					}
@@ -702,9 +704,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		const fileUris = cli['file-uri'];
 		if (fileUris) {
 			for (const rawFileUri of fileUris) {
-				const fileUri = this.argToUri(rawFileUri);
+				const fileUri = this.cliArgToUri(rawFileUri);
 				if (fileUri) {
-					const path = this.resolveUri(hasWorkspaceFileExtension(rawFileUri) ? { workspaceUri: fileUri } : { fileUri }, pathResolveOptions);
+					const path = this.resolveOpenable(hasWorkspaceFileExtension(rawFileUri) ? { workspaceUri: fileUri } : { fileUri }, pathResolveOptions);
 					if (path) {
 						pathsToOpen.push(path);
 					}
@@ -715,7 +717,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		// folder or file paths
 		const cliPaths = cli._;
 		for (const cliPath of cliPaths) {
-			const path = this.resolvePath(cliPath, pathResolveOptions);
+			const path = this.doResolveFileOpenable(cliPath, pathResolveOptions);
 			if (path) {
 				pathsToOpen.push(path);
 			}
@@ -724,7 +726,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return pathsToOpen;
 	}
 
-	private argToUri(arg: string): URI | undefined {
+	private cliArgToUri(arg: string): URI | undefined {
 		try {
 			const uri = URI.parse(arg);
 			if (!uri.scheme) {
@@ -772,7 +774,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 					// Workspaces
 					if (lastSessionWindow.workspace) {
-						const pathToOpen = this.resolveUri({ workspaceUri: lastSessionWindow.workspace.configPath }, { remoteAuthority: lastSessionWindow.remoteAuthority });
+						const pathToOpen = this.resolveOpenable({ workspaceUri: lastSessionWindow.workspace.configPath }, { remoteAuthority: lastSessionWindow.remoteAuthority });
 						if (isWorkspacePathToOpen(pathToOpen)) {
 							pathsToOpen.push(pathToOpen);
 						}
@@ -780,7 +782,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 					// Folders
 					else if (lastSessionWindow.folderUri) {
-						const pathToOpen = this.resolveUri({ folderUri: lastSessionWindow.folderUri }, { remoteAuthority: lastSessionWindow.remoteAuthority });
+						const pathToOpen = this.resolveOpenable({ folderUri: lastSessionWindow.folderUri }, { remoteAuthority: lastSessionWindow.remoteAuthority });
 						if (isSingleFolderWorkspacePathToOpen(pathToOpen)) {
 							pathsToOpen.push(pathToOpen);
 						}
@@ -812,19 +814,19 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return restoreWindows;
 	}
 
-	private resolveUri(openable: IWindowOpenable, options: IPathResolveOptions = {}): IPathToOpen | undefined {
+	private resolveOpenable(openable: IWindowOpenable, options: IPathResolveOptions = {}): IPathToOpen | undefined {
 
-		// handle local openables with some extra validation
+		// handle file:// openables with some extra validation
 		let uri = this.resourceFromOpenable(openable);
 		if (uri.scheme === Schemas.file) {
-			return this.resolvePath(uri.fsPath, options, isFileToOpen(openable));
+			return this.doResolveFileOpenable(openable, options);
 		}
 
-		// handle remote openables
-		return this.resolveRemoteUri(openable, options);
+		// handle non file:// openables
+		return this.doResolveRemoteOpenable(openable, options);
 	}
 
-	private resolveRemoteUri(openable: IWindowOpenable, options: IPathResolveOptions = {}): IPathToOpen | undefined {
+	private doResolveRemoteOpenable(openable: IWindowOpenable, options: IPathResolveOptions): IPathToOpen | undefined {
 		let uri = this.resourceFromOpenable(openable);
 
 		// open remote if either specified in the cli or if it's a remotehost URI
@@ -833,28 +835,23 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		// normalize URI
 		uri = removeTrailingPathSeparator(normalizePath(uri));
 
-		// Remote File
+		// File
 		if (isFileToOpen(openable)) {
 			if (options.gotoLineMode) {
 				const { path, line, column } = parseLineAndColumnAware(uri.path);
 
-				return {
-					fileUri: uri.with({ path }),
-					lineNumber: line,
-					columnNumber: column,
-					remoteAuthority
-				};
+				return { fileUri: uri.with({ path }), lineNumber: line, columnNumber: column, remoteAuthority };
 			}
 
 			return { fileUri: uri, remoteAuthority };
 		}
 
-		// Remote Workspace
+		// Workspace
 		else if (isWorkspaceToOpen(openable)) {
 			return { workspace: getWorkspaceIdentifier(uri), remoteAuthority };
 		}
 
-		// Remote Folder
+		// Folder
 		return { workspace: getSingleFolderWorkspaceIdentifier(uri), remoteAuthority };
 	}
 
@@ -870,7 +867,17 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return openable.fileUri;
 	}
 
-	private resolvePath(path: string, options: IPathResolveOptions, forceOpenWorkspaceAsFile?: boolean): IPathToOpen | undefined {
+	private doResolveFileOpenable(path: string, options: IPathResolveOptions): IPathToOpen | undefined;
+	private doResolveFileOpenable(openable: IWindowOpenable, options: IPathResolveOptions): IPathToOpen | undefined;
+	private doResolveFileOpenable(pathOrOpenable: string | IWindowOpenable, options: IPathResolveOptions): IPathToOpen | undefined {
+		let path: string;
+		let forceOpenWorkspaceAsFile = false;
+		if (typeof pathOrOpenable === 'string') {
+			path = pathOrOpenable;
+		} else {
+			path = this.resourceFromOpenable(pathOrOpenable).fsPath;
+			forceOpenWorkspaceAsFile = isFileToOpen(pathOrOpenable);
+		}
 
 		// Extract line/col information from path
 		let lineNumber: number | undefined;
@@ -884,17 +891,17 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			path = parsedPath.path;
 		}
 
-		// Handle remote paths
+		// With remote: resolve path as remote URI
 		const remoteAuthority = options.remoteAuthority;
 		if (remoteAuthority) {
-			return this.resolveRemotePath(path, remoteAuthority, forceOpenWorkspaceAsFile);
+			return this.doResolvePathRemote(path, remoteAuthority, forceOpenWorkspaceAsFile);
 		}
 
-		// Handle local paths
-		return this.resolveLocalPath(path, options, lineNumber, columnNumber, forceOpenWorkspaceAsFile);
+		// Without remote: resolve path as local URI
+		return this.doResolvePathLocal(path, options, lineNumber, columnNumber, forceOpenWorkspaceAsFile);
 	}
 
-	private resolveRemotePath(path: string, remoteAuthority: string, forceOpenWorkspaceAsFile?: boolean): IPathToOpen | undefined {
+	private doResolvePathRemote(path: string, remoteAuthority: string, forceOpenWorkspaceAsFile?: boolean): IPathToOpen | undefined {
 		const first = path.charCodeAt(0);
 
 		// make absolute
@@ -908,7 +915,10 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 		const uri = URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: path });
 
-		// guess the file type: If it ends with a slash it's a folder. If it has a file extension, it's a file or a workspace. By defaults it's a folder.
+		// guess the file type:
+		// - if it ends with a slash it's a folder
+		// - if it has a file extension, it's a file or a workspace
+		// - by defaults it's a folder
 		if (path.charCodeAt(path.length - 1) !== CharCode.Slash) {
 
 			// file name ends with .code-workspace
@@ -916,6 +926,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 				if (forceOpenWorkspaceAsFile) {
 					return { fileUri: uri, remoteAuthority };
 				}
+				return { workspace: getWorkspaceIdentifier(uri), remoteAuthority };
 			}
 
 			// file name starts with a dot or has an file extension
@@ -927,7 +938,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return { workspace: getSingleFolderWorkspaceIdentifier(uri), remoteAuthority };
 	}
 
-	private resolveLocalPath(path: string, options: IPathResolveOptions, lineNumber: number | undefined, columnNumber: number | undefined, forceOpenWorkspaceAsFile?: boolean): IPathToOpen | undefined {
+	private doResolvePathLocal(path: string, options: IPathResolveOptions, lineNumber: number | undefined, columnNumber: number | undefined, forceOpenWorkspaceAsFile?: boolean): IPathToOpen | undefined {
 
 		// Ensure the path is normalized and absolute
 		path = sanitizeFilePath(normalize(path), process.env['VSCODE_CWD'] || process.cwd());
@@ -940,21 +951,12 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 				if (!forceOpenWorkspaceAsFile) {
 					const workspace = this.workspacesManagementMainService.resolveLocalWorkspaceSync(URI.file(path));
 					if (workspace) {
-						return {
-							workspace: { id: workspace.id, configPath: workspace.configPath },
-							remoteAuthority: workspace.remoteAuthority,
-							exists: true
-						};
+						return { workspace: { id: workspace.id, configPath: workspace.configPath }, remoteAuthority: workspace.remoteAuthority, exists: true };
 					}
 				}
 
 				// File
-				return {
-					fileUri: URI.file(path),
-					lineNumber,
-					columnNumber,
-					exists: true
-				};
+				return { fileUri: URI.file(path), lineNumber, columnNumber, exists: true };
 			}
 
 			// Folder (we check for isDirectory() because e.g. paths like /dev/null
@@ -1088,7 +1090,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		});
 
 		folderUris = folderUris.filter(folderUriStr => {
-			const folderUri = this.argToUri(folderUriStr);
+			const folderUri = this.cliArgToUri(folderUriStr);
 			if (folderUri && !!findWindowOnWorkspaceOrFolder(this.getWindows(), folderUri)) {
 				return false;
 			}
@@ -1097,7 +1099,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		});
 
 		fileUris = fileUris.filter(fileUriStr => {
-			const fileUri = this.argToUri(fileUriStr);
+			const fileUri = this.cliArgToUri(fileUriStr);
 			if (fileUri && !!findWindowOnWorkspaceOrFolder(this.getWindows(), fileUri)) {
 				return false;
 			}
@@ -1133,9 +1135,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 		// Build `INativeWindowConfiguration` from config and options
 		const configuration = { ...options.cli } as INativeWindowConfiguration;
-		configuration.appRoot = this.environmentService.appRoot;
+		configuration.appRoot = this.environmentMainService.appRoot;
 		configuration.machineId = this.machineId;
-		configuration.nodeCachedDataDir = this.environmentService.nodeCachedDataDir;
+		configuration.nodeCachedDataDir = this.environmentMainService.nodeCachedDataDir;
 		configuration.mainPid = process.pid;
 		configuration.execPath = process.execPath;
 		configuration.userEnv = { ...this.initialUserEnv, ...options.userEnv };
@@ -1155,7 +1157,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		// For all other cases we first call into registerEmptyWindowBackupSync() to set it before
 		// loading the window.
 		if (options.emptyWindowBackupInfo) {
-			configuration.backupPath = join(this.environmentService.backupHome, options.emptyWindowBackupInfo.backupFolder);
+			configuration.backupPath = join(this.environmentMainService.backupHome, options.emptyWindowBackupInfo.backupFolder);
 		}
 
 		let window: ICodeWindow | undefined;
@@ -1189,20 +1191,22 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			WindowsMainService.WINDOWS.push(createdWindow);
 
 			// Indicate new window via event
-			this._onWindowOpened.fire(createdWindow);
+			this._onDidOpenWindow.fire(createdWindow);
 
 			// Indicate number change via event
-			this._onWindowsCountChanged.fire({ oldCount: this.getWindowCount() - 1, newCount: this.getWindowCount() });
+			this._onDidChangeWindowsCount.fire({ oldCount: this.getWindowCount() - 1, newCount: this.getWindowCount() });
 
 			// Window Events
-			once(createdWindow.onReady)(() => this._onWindowReady.fire(createdWindow));
-			once(createdWindow.onClose)(() => this.onWindowClosed(createdWindow));
-			once(createdWindow.onDestroy)(() => this._onWindowDestroyed.fire(createdWindow));
-			createdWindow.win.webContents.removeAllListeners('devtools-reload-page'); // remove built in listener so we can handle this on our own
-			createdWindow.win.webContents.on('devtools-reload-page', () => this.lifecycleMainService.reload(createdWindow));
+			once(createdWindow.onDidSignalReady)(() => this._onDidSignalReadyWindow.fire(createdWindow));
+			once(createdWindow.onDidClose)(() => this.onWindowClosed(createdWindow));
+			once(createdWindow.onDidDestroy)(() => this._onDidDestroyWindow.fire(createdWindow));
+
+			const webContents = assertIsDefined(createdWindow.win?.webContents);
+			webContents.removeAllListeners('devtools-reload-page'); // remove built in listener so we can handle this on our own
+			webContents.on('devtools-reload-page', () => this.lifecycleMainService.reload(createdWindow));
 
 			// Lifecycle
-			(this.lifecycleMainService as LifecycleMainService).registerWindow(createdWindow);
+			this.lifecycleMainService.registerWindow(createdWindow);
 		}
 
 		// Existing window
@@ -1262,7 +1266,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		WindowsMainService.WINDOWS.splice(index, 1);
 
 		// Emit
-		this._onWindowsCountChanged.fire({ oldCount: this.getWindowCount() + 1, newCount: this.getWindowCount() });
+		this._onDidChangeWindowsCount.fire({ oldCount: this.getWindowCount() + 1, newCount: this.getWindowCount() });
 	}
 
 	getFocusedWindow(): ICodeWindow | undefined {

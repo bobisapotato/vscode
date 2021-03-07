@@ -626,7 +626,7 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 			stat.isExcluded = true;
 			return false;
 		}
-		if (this.explorerService.getEditableData(stat) || stat.isRoot) {
+		if (this.explorerService.getEditableData(stat)) {
 			return true; // always visible
 		}
 
@@ -1229,9 +1229,10 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 
 				res = await reader.read();
 			}
-			writeableStream.end(res.value instanceof Uint8Array ? VSBuffer.wrap(res.value) : undefined);
+			writeableStream.end(undefined);
 		} catch (error) {
-			writeableStream.end(error);
+			writeableStream.error(error);
+			writeableStream.end();
 		}
 
 		if (token.isCancellationRequested) {

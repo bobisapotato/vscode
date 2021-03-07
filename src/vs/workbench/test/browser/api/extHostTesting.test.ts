@@ -6,6 +6,7 @@
 import * as assert from 'assert';
 import { MirroredTestCollection, TestItemFilteredWrapper } from 'vs/workbench/api/common/extHostTesting';
 import * as convert from 'vs/workbench/api/common/extHostTypeConverters';
+import { TestItem as TestItemImpl } from 'vs/workbench/api/common/extHostTypes';
 import { TestDiffOpType } from 'vs/workbench/contrib/testing/common/testCollection';
 import { stubTest, testStubs } from 'vs/workbench/contrib/testing/common/testStubs';
 import { TestOwnedTestCollection, TestSingleUseCollection } from 'vs/workbench/contrib/testing/test/common/ownedTestCollection';
@@ -14,26 +15,24 @@ import { URI } from 'vs/base/common/uri';
 import { Location } from 'vs/editor/common/modes';
 import { Range } from 'vs/editor/common/core/range';
 
-const simplify = (item: TestItem) => {
-	if ('toJSON' in item) {
-		item = (item as any).toJSON();
-		delete (item as any).providerId;
-		delete (item as any).testId;
-	}
+const simplify = (item: TestItem) => ({
+	id: item.id,
+	label: item.label,
+	location: item.location,
+	runnable: item.runnable,
+	debuggable: item.debuggable,
+});
 
-	return { ...item, children: undefined };
-};
-
-const assertTreesEqual = (a: Readonly<TestItem>, b: Readonly<TestItem>) => {
+const assertTreesEqual = (a: TestItem, b: TestItem) => {
 	assert.deepStrictEqual(simplify(a), simplify(b));
 
-	const aChildren = (a.children ?? []).sort();
-	const bChildren = (b.children ?? []).sort();
+	const aChildren = (a.children ?? []).slice().sort();
+	const bChildren = (b.children ?? []).slice().sort();
 	assert.strictEqual(aChildren.length, bChildren.length, `expected ${a.label}.children.length == ${b.label}.children.length`);
 	aChildren.forEach((_, i) => assertTreesEqual(aChildren[i], bChildren[i]));
 };
 
-const assertTreeListEqual = (a: ReadonlyArray<Readonly<TestItem>>, b: ReadonlyArray<Readonly<TestItem>>) => {
+const assertTreeListEqual = (a: ReadonlyArray<TestItem>, b: ReadonlyArray<TestItem>) => {
 	assert.strictEqual(a.length, b.length, `expected a.length == n.length`);
 	a.forEach((_, i) => assertTreesEqual(a[i], b[i]));
 };
@@ -61,7 +60,7 @@ suite('ExtHost Testing', () => {
 
 	teardown(() => {
 		single.dispose();
-		assert.strictEqual(owned.idToInternal.size, 0, 'expected owned ids to be empty after dispose');
+		assert.strictEqual(!owned.idToInternal?.size, true, 'expected owned ids to be empty after dispose');
 	});
 
 	suite('OwnedTestCollection', () => {
@@ -69,11 +68,11 @@ suite('ExtHost Testing', () => {
 			const tests = testStubs.nested();
 			single.addRoot(tests, 'pid');
 			assert.deepStrictEqual(single.collectDiff(), [
-				[TestDiffOpType.Add, { id: '0', providerId: 'pid', parent: null, item: convert.TestItem.from(stubTest('root')) }],
-				[TestDiffOpType.Add, { id: '1', providerId: 'pid', parent: '0', item: convert.TestItem.from(stubTest('a')) }],
-				[TestDiffOpType.Add, { id: '2', providerId: 'pid', parent: '1', item: convert.TestItem.from(stubTest('aa')) }],
-				[TestDiffOpType.Add, { id: '3', providerId: 'pid', parent: '1', item: convert.TestItem.from(stubTest('ab')) }],
-				[TestDiffOpType.Add, { id: '4', providerId: 'pid', parent: '0', item: convert.TestItem.from(stubTest('b')) }],
+				[TestDiffOpType.Add, { providerId: 'pid', parent: null, item: convert.TestItem.from(stubTest('root')) }],
+				[TestDiffOpType.Add, { providerId: 'pid', parent: 'id-root', item: convert.TestItem.from(stubTest('a')) }],
+				[TestDiffOpType.Add, { providerId: 'pid', parent: 'id-a', item: convert.TestItem.from(stubTest('aa')) }],
+				[TestDiffOpType.Add, { providerId: 'pid', parent: 'id-a', item: convert.TestItem.from(stubTest('ab')) }],
+				[TestDiffOpType.Add, { providerId: 'pid', parent: 'id-root', item: convert.TestItem.from(stubTest('b')) }],
 			]);
 		});
 
@@ -90,8 +89,11 @@ suite('ExtHost Testing', () => {
 			single.collectDiff();
 			tests.children![0].description = 'Hello world'; /* item a */
 			single.onItemChange(tests, 'pid');
+
+			const expected = stubTest('a');
+			expected.description = 'Hello world';
 			assert.deepStrictEqual(single.collectDiff(), [
-				[TestDiffOpType.Update, { id: '1', parent: '0', providerId: 'pid', item: convert.TestItem.from({ ...stubTest('a'), description: 'Hello world' }) }],
+				[TestDiffOpType.Update, { parent: 'id-root', providerId: 'pid', item: convert.TestItem.from(expected) }],
 			]);
 
 			single.onItemChange(tests, 'pid');
@@ -106,9 +108,9 @@ suite('ExtHost Testing', () => {
 			single.onItemChange(tests, 'pid');
 
 			assert.deepStrictEqual(single.collectDiff(), [
-				[TestDiffOpType.Remove, '1'],
+				[TestDiffOpType.Remove, 'id-a'],
 			]);
-			assert.deepStrictEqual([...owned.idToInternal.keys()].sort(), ['0', '4']);
+			assert.deepStrictEqual([...owned.idToInternal].map(n => n.item.extId).sort(), ['id-b', 'id-root']);
 			assert.strictEqual(single.itemToInternal.size, 2);
 		});
 
@@ -121,9 +123,12 @@ suite('ExtHost Testing', () => {
 			single.onItemChange(tests, 'pid');
 
 			assert.deepStrictEqual(single.collectDiff(), [
-				[TestDiffOpType.Add, { id: '5', providerId: 'pid', parent: '1', item: convert.TestItem.from(child) }],
+				[TestDiffOpType.Add, { providerId: 'pid', parent: 'id-a', item: convert.TestItem.from(child) }],
 			]);
-			assert.deepStrictEqual([...owned.idToInternal.keys()].sort(), ['0', '1', '2', '3', '4', '5']);
+			assert.deepStrictEqual(
+				[...owned.idToInternal].map(n => n.item.extId).sort(),
+				['id-a', 'id-aa', 'id-ab', 'id-ac', 'id-b', 'id-root'],
+			);
 			assert.strictEqual(single.itemToInternal.size, 6);
 		});
 	});
@@ -136,7 +141,7 @@ suite('ExtHost Testing', () => {
 			const tests = testStubs.nested();
 			single.addRoot(tests, 'pid');
 			m.apply(single.collectDiff());
-			assertTreesEqual(m.rootTestItems[0], owned.getTestById('0')!.actual);
+			assertTreesEqual(m.rootTestItems[0], owned.getTestById('id-root')![1].actual);
 			assert.strictEqual(m.length, single.itemToInternal.size);
 		});
 
@@ -148,7 +153,7 @@ suite('ExtHost Testing', () => {
 			single.onItemChange(tests, 'pid');
 			m.apply(single.collectDiff());
 
-			assertTreesEqual(m.rootTestItems[0], owned.getTestById('0')!.actual);
+			assertTreesEqual(m.rootTestItems[0], owned.getTestById('id-root')![1].actual);
 			assert.strictEqual(m.length, single.itemToInternal.size);
 		});
 
@@ -160,7 +165,7 @@ suite('ExtHost Testing', () => {
 			single.onItemChange(tests, 'pid');
 			m.apply(single.collectDiff());
 
-			assertTreesEqual(m.rootTestItems[0], owned.getTestById('0')!.actual);
+			assertTreesEqual(m.rootTestItems[0], owned.getTestById('id-root')![1].actual);
 			assert.strictEqual(m.length, single.itemToInternal.size);
 		});
 
@@ -172,7 +177,7 @@ suite('ExtHost Testing', () => {
 			single.onItemChange(tests, 'pid');
 			m.apply(single.collectDiff());
 
-			assertTreesEqual(m.rootTestItems[0], owned.getTestById('0')!.actual);
+			assertTreesEqual(m.rootTestItems[0], owned.getTestById('id-root')![1].actual);
 		});
 
 		suite('MirroredChangeCollector', () => {
@@ -184,7 +189,6 @@ suite('ExtHost Testing', () => {
 			});
 
 			test('creates change for root', () => {
-				assert.deepStrictEqual(m.changeEvent.commonChangeAncestor, null);
 				assertTreeListEqual(m.changeEvent.added, [
 					tests,
 					tests.children[0],
@@ -201,7 +205,6 @@ suite('ExtHost Testing', () => {
 				single.onItemChange(tests, 'pid');
 				m.apply(single.collectDiff());
 
-				assertTreesEqual(m.changeEvent.commonChangeAncestor!, tests);
 				assertTreeListEqual(m.changeEvent.added, []);
 				assertTreeListEqual(m.changeEvent.removed, [
 					{ ...rm, children: [] },
@@ -216,14 +219,13 @@ suite('ExtHost Testing', () => {
 				single.onItemChange(tests, 'pid');
 				m.apply(single.collectDiff());
 
-				assert.deepStrictEqual(m.changeEvent.commonChangeAncestor?.label, 'updated!');
 				assertTreeListEqual(m.changeEvent.added, []);
 				assertTreeListEqual(m.changeEvent.removed, []);
 				assertTreeListEqual(m.changeEvent.updated, [tests.children[0]]);
 			});
 
 			test('is a no-op if a node is added and removed', () => {
-				const nested = testStubs.nested();
+				const nested = testStubs.nested('id2-');
 				tests.children.push(nested);
 				single.onItemChange(tests, 'pid');
 				tests.children.pop();
@@ -241,7 +243,6 @@ suite('ExtHost Testing', () => {
 				single.onItemChange(tests, 'pid');
 				m.apply(single.collectDiff());
 
-				assert.strictEqual(m.changeEvent.commonChangeAncestor?.label, 'root');
 				assertTreeListEqual(m.changeEvent.added, [child]);
 				assertTreeListEqual(m.changeEvent.removed, []);
 				assertTreeListEqual(m.changeEvent.updated, []);
@@ -253,7 +254,6 @@ suite('ExtHost Testing', () => {
 				single.onItemChange(tests, 'pid');
 				m.apply(single.collectDiff());
 
-				assert.strictEqual(m.changeEvent.commonChangeAncestor?.label, 'a');
 			});
 
 			test('gets the common ancestor (2)', () => {
@@ -261,14 +261,12 @@ suite('ExtHost Testing', () => {
 				tests.children![1].label = 'ab';
 				single.onItemChange(tests, 'pid');
 				m.apply(single.collectDiff());
-
-				assert.strictEqual(m.changeEvent.commonChangeAncestor?.label, 'root');
 			});
 		});
 
 		suite('TestItemFilteredWrapper', () => {
-			const stubTestWithLocation = (label: string, location: Location): TestItem => {
-				const t = stubTest(label);
+			const stubTestWithLocation = (label: string, location: Location, children: TestItemImpl[] = []) => {
+				const t = stubTest(label, undefined, children);
 				t.location = location as any;
 				return t;
 			};
@@ -294,22 +292,12 @@ suite('ExtHost Testing', () => {
 
 			let testsWithLocation: TestItem;
 			setup(() => {
-				testsWithLocation = {
-					...stubTest('root'),
-					children: [
-						{
-							...stubTestWithLocation('a', location1),
-							children: [stubTestWithLocation('aa', location1), stubTestWithLocation('ab', location1)]
-						},
-						{
-							...stubTestWithLocation('b', location2),
-							children: [stubTestWithLocation('ba', location2), stubTestWithLocation('bb', location2)]
-						},
-						{
-							...stubTestWithLocation('b', location3),
-						}
-					],
-				};
+				testsWithLocation =
+					stubTest('root', undefined, [
+						stubTestWithLocation('a', location1, [stubTestWithLocation('aa', location1), stubTestWithLocation('ab', location1)]),
+						stubTestWithLocation('b', location2, [stubTestWithLocation('ba', location2), stubTestWithLocation('bb', location2)]),
+						stubTestWithLocation('b', location3),
+					]);
 			});
 
 			teardown(() => {
@@ -325,7 +313,6 @@ suite('ExtHost Testing', () => {
 				assert.strictEqual(testItem.label, wrapper.label);
 				assert.strictEqual(testItem.location, wrapper.location);
 				assert.strictEqual(testItem.runnable, wrapper.runnable);
-				assert.strictEqual(testItem.state, wrapper.state);
 			});
 
 			test('gets no children if nothing matches Uri filter', () => {
